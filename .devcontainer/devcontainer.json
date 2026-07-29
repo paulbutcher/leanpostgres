@@ -2,6 +2,13 @@
 	"name": "Ubuntu",
 	"build": { "dockerfile": "Dockerfile" },
 
+	"containerEnv": {
+    "PGHOST": "host.docker.internal",
+    "PGPORT": "5432",
+    "PGUSER": "leanpostgres",
+    "PGDATABASE": "leanpostgres"
+  },
+
 	"customizations": {
 		"vscode": {
 			"extensions": ["leanprover.lean4", "anthropic.claude-code"]
