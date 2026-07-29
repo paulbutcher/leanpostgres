@@ -1,0 +1,10 @@
+{
+	"name": "Ubuntu",
+	"build": { "dockerfile": "Dockerfile" },
+
+	"customizations": {
+		"vscode": {
+			"extensions": ["leanprover.lean4", "anthropic.claude-code"]
+		}
+	}
+}
