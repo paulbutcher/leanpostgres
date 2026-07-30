@@ -9,6 +9,30 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: leanpostgres
+          POSTGRES_PASSWORD: leanpostgres
+          POSTGRES_DB: leanpostgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: leanpostgres
+      PGPASSWORD: leanpostgres
+      PGDATABASE: leanpostgres
+
     steps:
       - uses: actions/checkout@v5
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev pkg-config
       - uses: leanprover/lean-action@v1

@@ -1,6 +1,0 @@
-name = "leanpostgres"
-version = "0.1.0"
-defaultTargets = ["Postgres"]
-
-[[lean_lib]]
-name = "Postgres"

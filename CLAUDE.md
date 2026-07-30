@@ -23,4 +23,11 @@ Project-specific guidance for Claude Code when working in this repo.
   from reading the code.
 - Don't refer to previous implementations or rejected designs unless doing so is
   essential to understand the code.
+- Don't mention project plans, milestones, ticket numbers, or anything similar in
+  comments. Comments should remain valid years ahead, when people will not care 
+  about the process that led to them.
   
+## Environment
+
+- Installing packages should be done by infrastructure external to this project so
+  it's controlled. Therefore, never install any packages. Always ask before doing so.
