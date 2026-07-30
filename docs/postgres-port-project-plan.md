@@ -44,6 +44,7 @@ doesn't re-derive design decisions already made there.
 | M8 | Result metadata & remaining LowLevel surface | 2.5 | M2 | M6, M7 |
 | M9 | Test suite consolidation & CI hardening | 3.5 | M4–M8 | — |
 | M10 | Documentation & release polish | 2.5 | M9 | — |
+| M11 | Property-based Blob-deriving tests (Plausible) | 1.5 | M6 | M7–M10 |
 
 M0–M3 are a strict critical path (build → connect → execute → bind/read
 types); nothing else can start before M3 lands, since every later
@@ -292,6 +293,46 @@ The largest source of genuinely new implementation work (no
 - **Exit criteria**: README complete, `linter.missingDocs` passes
   with no suppressions, ready to tag.
 
+## M11 — Property-based Blob-deriving tests (Plausible)
+
+Not required for the v1 release — see "Definition of done for v1"
+below. M6 shipped `Postgres.Blob`'s `ToBinary`/`FromBinary` deriving
+handlers with deterministic, example-based round-trip tests instead
+of `leansqlite`'s `Plausible`-based property tests
+(`tests/SQLiteTest/BlobDeriving.lean`), specifically to avoid taking
+on a new external dependency mid-port — every other milestone in this
+plan keeps the project dependency-free apart from what ships with the
+Lean toolchain. This milestone is the deliberate, explicit place to
+add that dependency back, once it's wanted, rather than skipping the
+gap silently.
+
+- Add `Plausible` as a Lake dependency. This is the project's first
+  dependency beyond the toolchain-bundled `Std`/`Lean` — get sign-off
+  before adding it (per this repo's package-install policy), don't
+  add it as a side effect of "just getting the tests passing."
+- Port `Arbitrary`/`Shrinkable` instances for the M6 Blob-deriving
+  fixture types already in `tests/TestMain.lean` (`Pair`, `Color`,
+  `Shape`, `Msg`, `Cmd`, `Box`), matching
+  `tests/SQLiteTest/BlobDeriving.lean:91-137`.
+- Replace (or run alongside — no need to delete the existing
+  deterministic checks if they still add value as fast smoke tests)
+  the example-based `roundTrips` checks with `Testable.test` property
+  runs over each fixture type, matching
+  `tests/SQLiteTest/BlobDeriving.lean:139-176`.
+- Out of scope: the negative `#guard_msgs` compile-time rejection
+  tests (proof fields, uninhabited types, etc.) are unaffected by this
+  milestone — those test the deriving handler's static shape checks,
+  not runtime serialization, and stay exactly as M6 left them.
+- **Tests**: property-based round-trip runs across a wide,
+  automatically-generated value space per fixture type (large `Nat`s
+  exercising the multi-byte varint path, empty/long/Unicode strings,
+  deeply nested recursive `Tree` values), plus the existing
+  uninhabited-type and `Option`/`Array` edge-case checks from
+  `BlobDeriving.lean:148-176`.
+- **Exit criteria**: parity with `tests/SQLiteTest/BlobDeriving.lean`'s
+  coverage, including automatic shrinking on failure — a strictly
+  wider value-space check than M6's hand-picked examples provided.
+
 ## Risk register
 
 | Risk | Impact | Mitigation |
@@ -318,11 +359,16 @@ The largest source of genuinely new implementation work (no
   multi-dimensional arrays, ranges, composite types) is explicitly
   out of scope for this plan and not blocking release — captured as
   a v2 backlog, not partially started.
+- M11 is explicitly excluded from v1 — it adds an external test-only
+  dependency (`Plausible`) that the rest of this plan deliberately
+  avoids, and M6's deterministic tests already meet M6's own exit
+  criteria without it. Pick it up post-release, if wanted.
 
 ## Suggested tracking
 
 Given `leansqlite`'s git history shows small, focused commits/PRs
 (toolchain bumps, individual CI changes), I'd track this as one GitHub
-milestone per M0–M10 above, one or more PRs per milestone, each
-landing with its own tests rather than one large PR at the end —
+milestone per M0–M10 above (M11 tracked separately, post-release), one
+or more PRs per milestone, each landing with its own tests rather than
+one large PR at the end —
 consistent with how the existing repo appears to work.

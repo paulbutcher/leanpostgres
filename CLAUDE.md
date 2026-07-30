@@ -29,8 +29,9 @@ Project-specific guidance for Claude Code when working in this repo.
   
 ## Environment
 
-- Installing packages should be done by infrastructure external to this project so
-  it's controlled. Therefore, never install any packages. Always ask before doing so.
+- Installing OS packages should be done by infrastructure external to this project so
+  it's controlled. Therefore, never install any OS packages. Always ask before doing
+  so. This does not apply to Lean packages (i.e. defined by lake-manifest or lakefile).
 
 ## Process
 
