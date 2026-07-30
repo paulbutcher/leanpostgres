@@ -147,5 +147,71 @@ def columnIsNull (stmt : Stmt) (column : Int32) : IO Bool := do
   return FFI.getisnull result cursor column
 
 end Stmt
+
+/-- Transaction isolation levels. -/
+inductive IsolationLevel where
+  /-- Allows reads of other transactions' concurrently committed changes; the Postgres default. -/
+  | readCommitted
+  /-- All reads within the transaction see a consistent snapshot taken at its start. -/
+  | repeatableRead
+  /-- As {lit}`repeatableRead`, with additional guarantees against write-skew anomalies. -/
+  | serializable
+deriving Repr, BEq, Hashable, Inhabited, Ord
+
+/-- Options for {lit}`beginTransaction`/{lit}`transaction`. -/
+structure TransactionOptions where
+  /-- The transaction's isolation level, or {lean}`none` to use the session default. -/
+  isolation : Option IsolationLevel := none
+  /-- Whether the transaction is read-only. -/
+  readOnly : Bool := false
+  /-- Whether the transaction may be deferred (only meaningful for a {lit}`serializable`, read-only transaction). -/
+  deferrable : Bool := false
+deriving Repr, BEq, Hashable, Inhabited
+
+private def isolationLevelSql : IsolationLevel → String
+  | .readCommitted => "ISOLATION LEVEL READ COMMITTED"
+  | .repeatableRead => "ISOLATION LEVEL REPEATABLE READ"
+  | .serializable => "ISOLATION LEVEL SERIALIZABLE"
+
+private def beginTransactionSql (opts : TransactionOptions) : String :=
+  let clauses :=
+    (match opts.isolation with
+      | some level => [isolationLevelSql level]
+      | none => []) ++
+    (if opts.readOnly then ["READ ONLY"] else []) ++
+    (if opts.deferrable then ["DEFERRABLE"] else [])
+  match clauses with
+  | [] => "BEGIN"
+  | _ => "BEGIN " ++ String.intercalate ", " clauses
+
+/-- Begins a transaction with the given options. -/
+def beginTransaction (db : Conn) (opts : TransactionOptions := {}) : IO Unit := do
+  (← prepare db (beginTransactionSql opts)).exec
+
+/-- Commits the current transaction. -/
+def commit (db : Conn) : IO Unit := do
+  (← prepare db "COMMIT").exec
+
+/-- Rolls the current transaction back. -/
+def rollback (db : Conn) : IO Unit := do
+  (← prepare db "ROLLBACK").exec
+
+/--
+Executes {name}`action` within a transaction, automatically committing or rolling back.
+
+If {name}`action` succeeds, the transaction is committed. If it throws an exception, the
+transaction is rolled back before the exception is re-thrown.
+-/
+def transaction (db : Conn) (action : IO α) (opts : TransactionOptions := {}) : IO α := do
+  beginTransaction db opts
+  try
+    let result ← action
+    commit db
+    return result
+  catch e =>
+    try rollback db
+    catch e' => throw <| IO.userError s!"Rollback failed: {e'}\nOriginal error: {e}"
+    throw e
+
 end
 end Postgres

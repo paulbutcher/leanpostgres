@@ -237,6 +237,80 @@ def checkInterpolationMacros (conn : Conn) : IO Unit := do
     throw <| IO.userError s!"expected {expected}, got {collected}"
   IO.println s!"interpolation macros OK: {collected}"
 
+/-- `beginTransaction` generates valid `BEGIN` text for every `TransactionOptions` combination. -/
+def checkTransactionOptionsCombinations (conn : Conn) : IO Unit := do
+  let combos : List TransactionOptions := [
+    {},
+    { isolation := some .readCommitted },
+    { isolation := some .repeatableRead },
+    { isolation := some .serializable },
+    { readOnly := true },
+    { deferrable := true },
+    { isolation := some .serializable, readOnly := true, deferrable := true }
+  ]
+  for opts in combos do
+    beginTransaction conn opts
+    rollback conn
+  IO.println "BEGIN text generation OK for every TransactionOptions combination"
+
+/-- `transaction` commits on success and rolls back on a thrown exception. -/
+def checkTransactionCommitAndRollback (conn : Conn) : IO Unit := do
+  let create ← prepare conn "CREATE TABLE IF NOT EXISTS leanpostgres_test_txn (id integer)"
+  create.exec
+  let clear ← prepare conn "DELETE FROM leanpostgres_test_txn"
+  clear.exec
+
+  let _ ← transaction conn (do
+    let insert ← prepare conn "INSERT INTO leanpostgres_test_txn (id) VALUES (1)"
+    insert.exec)
+  let select ← prepare conn "SELECT id FROM leanpostgres_test_txn WHERE id = 1"
+  if !(← select.step) then
+    throw <| IO.userError "expected the committed row to be visible after transaction succeeded"
+
+  let caught ← try
+      let _ ← transaction conn (do
+        let insert ← prepare conn "INSERT INTO leanpostgres_test_txn (id) VALUES (2)"
+        insert.exec
+        throw <| IO.userError "boom" : IO Unit)
+      pure (none : Option IO.Error)
+    catch e => pure (some e)
+  if caught.isNone then
+    throw <| IO.userError "expected the action's exception to propagate out of `transaction`"
+
+  let select2 ← prepare conn "SELECT id FROM leanpostgres_test_txn WHERE id = 2"
+  if ← select2.step then
+    throw <| IO.userError "expected the rolled-back row to be absent after transaction threw"
+
+  IO.println "transaction commit/rollback OK"
+
+/--
+A unique-constraint violation surfaces as SQLSTATE `23505`, not just a message string — asserting
+on the code (not the message) is the behavior callers are meant to rely on.
+-/
+def checkUniqueViolationSqlstate (conn : Conn) : IO Unit := do
+  let create ← prepare conn
+    "CREATE TABLE IF NOT EXISTS leanpostgres_test_unique (id integer PRIMARY KEY)"
+  create.exec
+  let clear ← prepare conn "DELETE FROM leanpostgres_test_unique"
+  clear.exec
+  let insert1 ← prepare conn "INSERT INTO leanpostgres_test_unique (id) VALUES (1)"
+  insert1.exec
+
+  let insert2 ← prepare conn "INSERT INTO leanpostgres_test_unique (id) VALUES (1)"
+  let caught ← try
+      insert2.exec
+      pure (none : Option IO.Error)
+    catch e => pure (some e)
+  match caught with
+  | none => throw <| IO.userError "expected a unique constraint violation, but the insert succeeded"
+  | some e =>
+    match Error.ofIOError? e with
+    | none => throw <| IO.userError s!"expected a Postgres.Error, got: {e}"
+    | some pgErr =>
+      if pgErr.sqlstate != "23505" then
+        throw <| IO.userError s!"expected SQLSTATE 23505, got: {pgErr}"
+      IO.println s!"unique violation correctly surfaced SQLSTATE 23505: {pgErr}"
+
 def main : IO Unit := do
   checkFFIInitialized
   checkConnectSuccess
@@ -249,4 +323,7 @@ def main : IO Unit := do
   checkCoreTypeRoundTrip conn
   checkTupleRowIteration conn
   checkInterpolationMacros conn
+  checkTransactionOptionsCombinations conn
+  checkTransactionCommitAndRollback conn
+  checkUniqueViolationSqlstate conn
   IO.println "all checks passed"
