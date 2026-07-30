@@ -28,6 +28,11 @@ doesn't re-derive design decisions already made there.
   engineer split that parallelizes the extended type catalog (M7)
   and result-metadata work (M8) against the core path could compress
   this to roughly 5–6 weeks wall-clock; noted per-milestone below.
+- Lean library dependencies are chosen tactically, per the design
+  doc's Goals — use what already exists (toolchain-bundled or a Lake
+  package) when it clearly fits, rather than hand-rolling an
+  equivalent or avoiding a dependency on principle. "Dependency-free"
+  is not itself an exit criterion for any milestone below.
 
 ## Milestone summary
 
@@ -299,17 +304,14 @@ Not required for the v1 release — see "Definition of done for v1"
 below. M6 shipped `Postgres.Blob`'s `ToBinary`/`FromBinary` deriving
 handlers with deterministic, example-based round-trip tests instead
 of `leansqlite`'s `Plausible`-based property tests
-(`tests/SQLiteTest/BlobDeriving.lean`), specifically to avoid taking
-on a new external dependency mid-port — every other milestone in this
-plan keeps the project dependency-free apart from what ships with the
-Lean toolchain. This milestone is the deliberate, explicit place to
-add that dependency back, once it's wanted, rather than skipping the
-gap silently.
+(`tests/SQLiteTest/BlobDeriving.lean`). `Plausible` is a reasonable
+dependency to add on its own merits — this project chooses
+dependencies tactically rather than avoiding them on principle — but
+M6's deterministic tests already meet M6's own exit criteria, so the
+wider property-based coverage is scheduled as separate, non-blocking
+follow-up work rather than folded into M6's timeline.
 
-- Add `Plausible` as a Lake dependency. This is the project's first
-  dependency beyond the toolchain-bundled `Std`/`Lean` — get sign-off
-  before adding it (per this repo's package-install policy), don't
-  add it as a side effect of "just getting the tests passing."
+- Add `Plausible` as a Lake dependency.
 - Port `Arbitrary`/`Shrinkable` instances for the M6 Blob-deriving
   fixture types already in `tests/TestMain.lean` (`Pair`, `Color`,
   `Shape`, `Msg`, `Cmd`, `Box`), matching
@@ -359,10 +361,10 @@ gap silently.
   multi-dimensional arrays, ranges, composite types) is explicitly
   out of scope for this plan and not blocking release — captured as
   a v2 backlog, not partially started.
-- M11 is explicitly excluded from v1 — it adds an external test-only
-  dependency (`Plausible`) that the rest of this plan deliberately
-  avoids, and M6's deterministic tests already meet M6's own exit
-  criteria without it. Pick it up post-release, if wanted.
+- M11 is explicitly excluded from v1 — M6's deterministic tests
+  already meet M6's own exit criteria, so the richer property-based
+  coverage is scheduled as separate, non-blocking follow-up work.
+  Pick it up post-release, if wanted.
 
 ## Suggested tracking
 

@@ -16,13 +16,13 @@ private def hexValue? (c : Char) : Option UInt8 :=
   else none
 
 /-- Encodes {lit}`bytes` as a Postgres {lit}`\x`-prefixed {lit}`bytea` hex literal. -/
-private def byteArrayToHex (bytes : ByteArray) : String :=
+public def byteArrayToHex (bytes : ByteArray) : String :=
   let appendByte (acc : String) (b : UInt8) : String :=
     acc.push (hexDigit (b >>> 4)) |>.push (hexDigit (b &&& 0xF))
   "\\x" ++ bytes.toList.foldl appendByte ""
 
 /-- Decodes a Postgres {lit}`\x`-prefixed {lit}`bytea` hex literal. -/
-private def hexToByteArray? (s : String) : Option ByteArray := do
+public def hexToByteArray? (s : String) : Option ByteArray := do
   let body ← if s.startsWith "\\x" then some (s.drop 2).toString else none
   let rec pairs : List Char → Option (List UInt8)
     | [] => some []
@@ -66,7 +66,7 @@ private def floatToExactDecimal (f : Float) : String :=
     if sign then s!"-{magnitude}" else magnitude
 
 /-- Encodes {lit}`f` as Postgres text, including {lit}`NaN`/{lit}`Infinity`/{lit}`-Infinity`. -/
-private def floatToText (f : Float) : String :=
+public def floatToText (f : Float) : String :=
   if f.isNaN then "NaN"
   else if f.isInf then (if f < 0 then "-Infinity" else "Infinity")
   else floatToExactDecimal f
@@ -106,7 +106,7 @@ private def parseUnsignedFloatBody? (s : String) : Option Float := do
     else Float.ofScientific mantissa false (-net).toNat
 
 /-- Parses Postgres float text, including {lit}`NaN`/{lit}`Infinity`/{lit}`-Infinity`. -/
-private def floatOfText? (s : String) : Option Float :=
+public def floatOfText? (s : String) : Option Float :=
   if s == "NaN" then some (0.0 / 0.0)
   else if s == "Infinity" then some (1.0 / 0.0)
   else if s == "-Infinity" then some (-(1.0 / 0.0))

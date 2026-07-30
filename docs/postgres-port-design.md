@@ -23,6 +23,12 @@ everything routes through `PQexecParams`.
   need (no busy-timeout retry loop, no rowid, no named-parameter
   rewriting), and skip complexity Postgres would need for streaming
   (single-row mode, cursors) since v1 buffers full result sets.
+- Use existing Lean libraries tactically where they clearly fit —
+  e.g. the toolchain-bundled `Std.Time` for date/time types — rather
+  than hand-rolling equivalents or avoiding dependencies as a blanket
+  rule. A dependency still needs to earn its place (pull real weight,
+  not just avoid a few lines of code), but "dependency-free apart from
+  `Std`" is not itself a project goal.
 
 ## Non-goals (v1)
 
@@ -186,11 +192,11 @@ no changes at all).
 | `text`/`varchar`/`char` | `String` | Direct. |
 | `bytea` | `ByteArray` | Postgres text format for bytea is hex (`\x...`); encode/decode hex client-side. (SQLite's `columnBlob`/`bindBlob` move raw bytes over FFI directly — this is a real difference worth noting, not just a rename.) |
 | `uuid` | `Postgres.Uuid` *(new wrapper around a 16-byte `ByteArray` or a fixed hex-string form)* | Text form is the standard `8-4-4-4-12` hyphenated hex. |
-| `date` | `Postgres.Date` *(new)* | ISO `YYYY-MM-DD`. No existing Lean stdlib date type is assumed available; define a minimal `{year, month, day}` structure rather than depending on an external date library, to keep the dependency footprint matching leansqlite's (currently dependency-free apart from `Std`). |
-| `time`/`time with time zone` | `Postgres.Time` *(new)* | ISO `HH:MM:SS[.ffffff]`, optional offset for `timetz`. |
-| `timestamp` | `Postgres.Timestamp` *(new)* | ISO `YYYY-MM-DD HH:MM:SS[.ffffff]`, no zone. |
-| `timestamp with time zone` | `Postgres.Timestamptz` *(new)* | Same, plus offset; Postgres always returns these normalized to the session's `TimeZone` setting — worth a doc note since it's a common source of surprise for people new to Postgres. |
-| `json`/`jsonb` | `String` | Per your feedback: `String` for v1, matching the dependency-light precedent set by the SQLite version. Documented as "the raw JSON text — parse it yourself." A structured `Json`-typed instance is a natural, additive v2 addition (same `QueryParam`/`ResultColumn` boundary), not a redesign, if/when it's worth taking a JSON library dependency. |
+| `date` | `Std.Time.PlainDate` | ISO `YYYY-MM-DD`. Used directly, no `Postgres`-namespaced wrapper — `Std.Time` (bundled with the toolchain) already provides a validated calendar-date type; Postgres's `QueryParam`/`ResultColumn` instances attach directly to it. Postgres's own text format has more flexibility (variable fractional-second width, trimmed trailing zeros) than `Std.Time`'s bundled format strings parse, so encode/decode goes through a small custom text codec rather than `Std.Time.Formats`. |
+| `time`/`time with time zone` | `Postgres.Time` *(new — composes `Std.Time.PlainTime` + optional `Std.Time.TimeZone.Offset`)* | ISO `HH:MM:SS[.ffffff]`, optional offset for `timetz`. `Std.Time` has no bundled type combining a bare time-of-day with an optional zone, so this is a thin composite of two `Std.Time` types rather than a hand-rolled one. |
+| `timestamp` | `Std.Time.PlainDateTime` | ISO `YYYY-MM-DD HH:MM:SS[.ffffff]`, no zone. Used directly (no wrapper) — it's exactly `Std.Time`'s date+time-of-day type. |
+| `timestamp with time zone` | `Std.Time.DateTime` | Same, plus offset; Postgres always returns these normalized to the session's `TimeZone` setting — worth a doc note since it's a common source of surprise for people new to Postgres. Used directly (no wrapper) via `Std.Time.TimeZone.ofSeconds`/`DateTime.ofPlainDateTimeWithZone`. |
+| `json`/`jsonb` | `String` | Per your feedback: `String` for v1. Documented as "the raw JSON text — parse it yourself." A structured `Json`-typed instance (e.g. via the already-bundled `Lean.Json`) is a natural, additive v2 addition (same `QueryParam`/`ResultColumn` boundary), not a redesign, if/when it's wanted. |
 | One-dimensional arrays (`int4[]`, `text[]`, ...) | `Array α` given `QueryParam α`/`ResultColumn α` | Postgres's array text literal format (`{a,b,c}`, with quoting/escaping rules for elements containing `,`/`{`/`}`/whitespace/`NULL`) needs a small dedicated parser/printer. Scope to one-dimensional arrays only for v1 — multi-dimensional array text format is a genuinely different grammar and better deferred. |
 | `NULL` | `Unit` (param side only, matching `QueryParam Unit` in the existing library) | Direct. |
 
