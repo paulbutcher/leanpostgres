@@ -51,10 +51,11 @@ installed before building:
  * Fedora/RHEL: `dnf install postgresql-devel`
  * macOS (Homebrew): `brew install libpq`
 
-The build locates `libpq`'s headers and library via `pkg-config` by
-default. If your platform doesn't have `pkg-config`, or `libpq` lives
-somewhere it can't find, set `LEANPOSTGRES_PQ_INCLUDE`/
-`LEANPOSTGRES_PQ_LIB` to the header/library directories explicitly.
+The build locates `libpq`'s headers and library via `pkg-config` or
+`brew --prefix` by default. If your platform doesn't have
+`pkg-config`, or `brew` or `libpq` lives somewhere it can't find, set
+`LEANPOSTGRES_PQ_INCLUDE`/ `LEANPOSTGRES_PQ_LIB` to the header/library
+directories explicitly.
 
 All values cross the wire as text in v1 (no binary protocol support) —
 `PQexecParams` is always called with null parameter/result format
@@ -74,12 +75,9 @@ Lean bindings, producing the library and any default targets.
 lake build
 ```
 
-The test suite exercises the FFI bindings and higher-level API against
-a **live Postgres instance** — unlike `leansqlite`'s temporary
-database file, there's no way to run these tests without one. Point
-the standard `PG*` environment variables (`PGHOST`, `PGPORT`,
+Point the standard `PG*` environment variables (`PGHOST`, `PGPORT`,
 `PGUSER`, `PGPASSWORD`, `PGDATABASE`) at a reachable server (the
-`.devcontainer` setup and CI workflow both do this for you), then:
+`.devcontainer` setup and CI workflow both include this), then:
 
 ```bash
 lake test
@@ -103,7 +101,3 @@ lake test -- --verbose
 
 This library is released under the Apache 2.0 license. See the LICENSE
 file for the complete license text.
-
-`libpq` is not bundled — it's a separate system dependency under its
-own license (the PostgreSQL License, a permissive BSD-style license).
-See your platform's `libpq`/`postgresql` package for its license text.

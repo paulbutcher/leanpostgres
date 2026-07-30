@@ -20,6 +20,25 @@ unsafe def pkgConfigVarImpl (name : String) : Option String :=
 @[implemented_by pkgConfigVarImpl]
 opaque pkgConfigVar (name : String) : Option String := none
 
+/--
+Runs `brew --prefix libpq`, for platforms where Homebrew's `libpq` is
+keg-only and doesn't register with `pkg-config` unless the user manually
+links it (the default install). `none` if `brew` isn't on `PATH` or doesn't
+know about `libpq`.
+-/
+unsafe def brewPrefixImpl (_ : Unit) : Option String :=
+  match unsafeBaseIO (EIO.toBaseIO (IO.Process.output
+      { cmd := "brew", args := #["--prefix", "libpq"] })) with
+  | .ok out =>
+    if out.exitCode == 0 then
+      let line := (out.stdout.splitOn "\n").headD ""
+      if line.isEmpty then none else some line
+    else none
+  | .error _ => none
+
+@[implemented_by brewPrefixImpl]
+opaque brewPrefix (_ : Unit) : Option String := none
+
 unsafe def getEnvImpl (name : String) : Option String :=
   unsafeBaseIO (IO.getEnv name)
 
@@ -30,10 +49,14 @@ opaque getEnv' (name : String) : Option String := none
 `-I` flags for the libpq headers: `LEANPOSTGRES_PQ_INCLUDE` override, else
 `pkg-config`'s `includedir` (queried directly rather than via `--cflags`,
 since `pkg-config` omits `-I` entirely for dirs it considers "standard" —
-which the Lean toolchain's bundled clang/lld don't necessarily search).
+which the Lean toolchain's bundled clang/lld don't necessarily search), else
+(macOS) `brew --prefix libpq`'s `include` directory.
 -/
 def libpqCflags : Array String :=
-  match getEnv' "LEANPOSTGRES_PQ_INCLUDE" |>.orElse (fun _ => pkgConfigVar "includedir") with
+  let dir := getEnv' "LEANPOSTGRES_PQ_INCLUDE"
+    |>.orElse (fun _ => pkgConfigVar "includedir")
+    |>.orElse (fun _ => brewPrefix () |>.map (· ++ "/include"))
+  match dir with
   | some dir => #["-I", dir]
   | none => #[]
 
@@ -47,9 +70,15 @@ glibc directories later in the link line, breaking the final executable
 link in a way that's silent and highly toolchain/platform-specific to
 debug (it manifests as missing glibc-internal symbols, not anything
 libpq-related). Linking by exact path sidesteps that entirely.
+
+Resolution order matches `libpqCflags`: `LEANPOSTGRES_PQ_LIB` override, else
+`pkg-config`'s `libdir`, else (macOS) `brew --prefix libpq`'s `lib` directory.
 -/
 target libpq.so _pkg : FilePath := do
-  let path := match getEnv' "LEANPOSTGRES_PQ_LIB" |>.orElse (fun _ => pkgConfigVar "libdir") with
+  let dir := getEnv' "LEANPOSTGRES_PQ_LIB"
+    |>.orElse (fun _ => pkgConfigVar "libdir")
+    |>.orElse (fun _ => brewPrefix () |>.map (· ++ "/lib"))
+  let path := match dir with
     | some dir => (dir : FilePath) / nameToSharedLib "pq"
     | none => nameToSharedLib "pq"
   return Job.pure path
