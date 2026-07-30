@@ -52,3 +52,27 @@ private opaque getvalue : @&Result → Int32 → Int32 → IO String
 /-- Whether `(row, column)` is SQL `NULL` in a buffered result set. -/
 @[extern "leanpostgres_getisnull"]
 private opaque getisnull : @&Result → Int32 → Int32 → Bool
+
+/-- The name of a result column (0-indexed), i.e. its output name/alias. -/
+@[extern "leanpostgres_fname"]
+private opaque fname : @&Result → Int32 → IO String
+
+/-- The command tag of the executed statement (e.g. `"SELECT"`, `"INSERT 0 3"`). -/
+@[extern "leanpostgres_cmd_status"]
+private opaque cmdStatus : @&Result → IO String
+
+/-- The number of rows affected, as decimal text; empty if the command doesn't produce one. -/
+@[extern "leanpostgres_cmd_tuples"]
+private opaque cmdTuples : @&Result → IO String
+
+/-- The OID of the table a result column directly references, or `0` if it's a computed expression. -/
+@[extern "leanpostgres_ftable"]
+private opaque ftable : @&Result → Int32 → UInt32
+
+/-- The attribute number within the table `ftable` identifies, or `0` if none. -/
+@[extern "leanpostgres_ftablecol"]
+private opaque ftablecol : @&Result → Int32 → Int32
+
+/-- The connection's current database name. -/
+@[extern "leanpostgres_db"]
+private opaque db : @&Conn → IO String

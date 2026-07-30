@@ -146,6 +146,107 @@ def columnIsNull (stmt : Stmt) (column : Int32) : IO Bool := do
   let (result, cursor) ← stmt.currentRow
   return FFI.getisnull result cursor column
 
+private def currentResult (stmt : Stmt) : IO FFI.Result := Prod.fst <$> stmt.currentRow
+
+/--
+Returns the name of the (0-indexed) result column — its output name, i.e. its {lit}`AS`-alias if
+one was given.
+
+Like every function below, this needs the statement to have already been executed at least once
+(see {name}`step`) — unlike SQLite, which compiles/plans a statement upfront at
+{name (full := Postgres.prepare)}`prepare` time, Postgres has no result metadata at all until a
+command has actually run.
+-/
+def columnName (stmt : Stmt) (column : Int32) : IO String := do
+  FFI.fname (← stmt.currentResult) column
+
+/--
+Returns the Postgres command tag of the executed statement (e.g. {lit}`SELECT`, {lit}`INSERT 0 3`,
+{lit}`DELETE 1`).
+-/
+def commandTag (stmt : Stmt) : IO String := do
+  FFI.cmdStatus (← stmt.currentResult)
+
+/--
+Returns the number of rows affected/retrieved by an {lit}`INSERT`/{lit}`UPDATE`/{lit}`DELETE`/
+{lit}`SELECT` (or {lit}`MOVE`/{lit}`FETCH`/{lit}`COPY`), or {lean}`none` if the command doesn't
+produce one (e.g. a DDL statement) — replaces SQLite's per-statement {lit}`changes`.
+-/
+def commandTuples (stmt : Stmt) : IO (Option Int64) := do
+  let s ← FFI.cmdTuples (← stmt.currentResult)
+  if s.isEmpty then return none
+  match s.toInt? with
+  | some n => return some (Int64.ofInt n)
+  | none => throw <| IO.userError s!"unexpected non-numeric PQcmdTuples value: {s}"
+
+private def readOnlyCommandHeads : List String :=
+  ["SELECT", "SHOW", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK"]
+
+/--
+Whether the executed statement is read-only, derived from its {name}`commandTag` — replaces
+SQLite's {lit}`sqlite3_stmt_readonly`, which determines this statically before execution. Postgres
+has no equivalent static check (statements aren't parsed/planned client-side here), so this is
+only available after {name}`step` has been called at least once, and only classifies the common
+cases ({lit}`SELECT`/{lit}`SHOW`/{lit}`EXPLAIN`/{lit}`BEGIN`/{lit}`COMMIT`/{lit}`ROLLBACK`) rather
+than being exhaustive over every read-only Postgres command.
+-/
+def isReadOnly (stmt : Stmt) : IO Bool := do
+  let tag ← stmt.commandTag
+  return readOnlyCommandHeads.contains ((tag.splitOn " ").headD "")
+
+/-- The table OID a result column directly references, or {lean}`none` for a computed expression. -/
+private def columnTableOid (stmt : Stmt) (column : Int32) : IO (Option UInt32) := do
+  let oid := FFI.ftable (← stmt.currentResult) column
+  return if oid == 0 then none else some oid
+
+/--
+Returns the name of the table a result column directly references, via an extra {lit}`pg_class`
+lookup on the column's table OID ({lit}`PQftable`). Empty if the column isn't a direct
+table-column reference (e.g. a computed expression), or the table has since been dropped.
+
+This is an extra round trip to the server that {name}`columnName` doesn't need — avoid it on a hot
+path if you don't need it.
+-/
+def columnTableName (stmt : Stmt) (column : Int32) : IO String := do
+  match ← stmt.columnTableOid column with
+  | none => return ""
+  | some oid =>
+    let lookup ← prepare stmt.conn "SELECT relname FROM pg_class WHERE oid = $1::oid"
+    lookup.bindText 1 (toString oid)
+    if ← lookup.step then lookup.columnText 0 else return ""
+
+/--
+Returns the original column name from the table definition, via {lit}`PQftable`/{lit}`PQftablecol`
+plus an extra {lit}`pg_attribute` lookup. For an aliased column (e.g.
+{lit}`SELECT user_name AS name`), this returns the underlying column's real name
+({lit}`user_name`), while {name}`columnName` returns the alias ({lit}`name`). Empty if the column
+isn't a direct table-column reference.
+
+Like {name}`columnTableName`, this is an extra round trip to the server — avoid it on a hot path
+if you don't need it.
+-/
+def columnOriginName (stmt : Stmt) (column : Int32) : IO String := do
+  match ← stmt.columnTableOid column with
+  | none => return ""
+  | some oid =>
+    let attnum := FFI.ftablecol (← stmt.currentResult) column
+    if attnum == 0 then return "" else
+    let lookup ← prepare stmt.conn
+      "SELECT attname FROM pg_attribute WHERE attrelid = $1::oid AND attnum = $2::int2"
+    lookup.bindText 1 (toString oid)
+    lookup.bindText 2 (toString attnum)
+    if ← lookup.step then lookup.columnText 0 else return ""
+
+/--
+Returns the connection's current database name, ignoring {name}`column`. Unlike SQLite (where
+{lit}`ATTACH DATABASE` lets one connection span several databases, hence a per-column database
+name), a single Postgres connection always addresses exactly one database — this is simply
+{name}`Conn`-level metadata, not something that can vary by result column.
+-/
+def columnDatabaseName (stmt : Stmt) (column : Int32) : IO String := do
+  let _ := column
+  FFI.db stmt.conn.connection
+
 end Stmt
 
 /-- Transaction isolation levels. -/

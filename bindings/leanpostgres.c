@@ -107,3 +107,38 @@ LEAN_EXPORT lean_object *leanpostgres_getvalue(b_lean_obj_arg result, int32_t ro
 LEAN_EXPORT uint8_t leanpostgres_getisnull(b_lean_obj_arg result, int32_t row, int32_t col) {
     return PQgetisnull((const PGresult *)lean_get_external_data(result), (int)row, (int)col) != 0;
 }
+
+LEAN_EXPORT lean_object *leanpostgres_fname(b_lean_obj_arg result, int32_t col) {
+    const char *name = PQfname((PGresult *)lean_get_external_data(result), (int)col);
+    return lean_io_result_mk_ok(lean_mk_string(name != NULL ? name : ""));
+}
+
+// The command tag of the most recently executed command (e.g. "SELECT", "INSERT 0 3"). Empty for
+// a `PGresult` that was never assigned one (shouldn't occur for anything `exec_params` returns).
+LEAN_EXPORT lean_object *leanpostgres_cmd_status(b_lean_obj_arg result) {
+    const char *status = PQcmdStatus((PGresult *)lean_get_external_data(result));
+    return lean_io_result_mk_ok(lean_mk_string(status != NULL ? status : ""));
+}
+
+// The number of rows affected by INSERT/UPDATE/DELETE/MOVE/FETCH/COPY, as decimal text; empty if
+// the command doesn't produce one (e.g. SELECT, DDL).
+LEAN_EXPORT lean_object *leanpostgres_cmd_tuples(b_lean_obj_arg result) {
+    const char *tuples = PQcmdTuples((PGresult *)lean_get_external_data(result));
+    return lean_io_result_mk_ok(lean_mk_string(tuples != NULL ? tuples : ""));
+}
+
+// The OID of the table a result column directly references, or 0 (InvalidOid) if it's a computed
+// expression rather than a direct table-column reference.
+LEAN_EXPORT uint32_t leanpostgres_ftable(b_lean_obj_arg result, int32_t col) {
+    return (uint32_t)PQftable((PGresult *)lean_get_external_data(result), (int)col);
+}
+
+// The attribute (column) number within the table `leanpostgres_ftable` identifies, or 0 if none.
+LEAN_EXPORT int32_t leanpostgres_ftablecol(b_lean_obj_arg result, int32_t col) {
+    return (int32_t)PQftablecol((PGresult *)lean_get_external_data(result), (int)col);
+}
+
+LEAN_EXPORT lean_object *leanpostgres_db(b_lean_obj_arg conn) {
+    const char *db = PQdb((PGconn *)lean_get_external_data(conn));
+    return lean_io_result_mk_ok(lean_mk_string(db != NULL ? db : ""));
+}
