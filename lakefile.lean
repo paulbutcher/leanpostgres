@@ -4,6 +4,7 @@ open Lake DSL System
 package leanpostgres where
   version := v!"0.1.0"
   license := "Apache-2.0"
+  leanOptions := #[⟨`experimental.module, true⟩]
 
 /-- Runs `pkg-config --variable=<name> libpq`. `none` if pkg-config doesn't know libpq. -/
 unsafe def pkgConfigVarImpl (name : String) : Option String :=

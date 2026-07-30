@@ -31,3 +31,8 @@ Project-specific guidance for Claude Code when working in this repo.
 
 - Installing packages should be done by infrastructure external to this project so
   it's controlled. Therefore, never install any packages. Always ask before doing so.
+
+## Process
+
+- If the user asks a question, JUST answer it. Do not take a question as an
+  instruction or recommendation; take it literally, answer it, and stop.
