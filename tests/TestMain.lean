@@ -1111,4 +1111,5 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     report s!"\n{finalStats.failures} test(s) failed!"
     return 1
 
-def main : IO UInt32 := runTests
+def main (args : List String) : IO UInt32 :=
+  runTests (verbose := args.contains "--verbose")
