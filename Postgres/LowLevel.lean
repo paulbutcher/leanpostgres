@@ -1,4 +1,5 @@
 module
+import all Postgres.FFI
 public import Postgres.FFI
 public import Postgres.Error
 
@@ -36,5 +37,115 @@ def «open» (conninfo : String) : IO Conn := do
   let connection ← FFI.«open» conninfo
   return { conninfo, connection }
 
+/--
+A prepared statement: SQL text plus a client-side buffer of parameters to bind before executing.
+
+There is no server-side prepared-statement object or name — {lit}`prepare` never round-trips
+to the server. Parameters and the executed result are held in mutable references because,
+unlike {lit}`sqlite3_stmt`, {name}`Stmt` has no backing C object of its own to mutate directly.
+-/
+structure Stmt where
+  /-- The connection this statement executes against. -/
+  conn : Conn
+  /-- The original SQL text, with {lit}`$1..$N` placeholders. -/
+  sql : String
+  /-- The number of parameters this statement expects, inferred from the highest {lit}`$N` placeholder found in {lit}`sql`. -/
+  paramCount : Nat
+  private paramsRef : IO.Ref (Array (Option String))
+  private execRef : IO.Ref (Option (FFI.Result × Int32))
+
+/--
+Scans {name}`sql` for the highest {lit}`$N` placeholder and returns {lit}`N` (0 if there are
+none).
+
+This is a plain text scan, not a SQL parser — a dollar sign inside a string literal or comment
+that happens to be followed by digits (e.g. {lit}`'$5 off'`) is indistinguishable from a real
+placeholder and would inflate the count. This only risks *over*-counting, though: a phantom
+extra parameter slot just stays unbound ({lit}`NULL`), it doesn't shift or misbind a real one.
+-/
+private def scanParamCount (sql : String) : Nat :=
+  go sql.toList none 0
+where
+  go : List Char → Option Nat → Nat → Nat
+  | [], curr, maxSoFar => max maxSoFar (curr.getD 0)
+  | '$' :: rest, curr, maxSoFar => go rest (some 0) (max maxSoFar (curr.getD 0))
+  | c :: rest, curr, maxSoFar =>
+    match curr with
+    | some n =>
+      if c.isDigit then
+        go rest (some (n * 10 + (c.toNat - '0'.toNat))) maxSoFar
+      else
+        go rest none (max maxSoFar n)
+    | none => go rest none maxSoFar
+
+/--
+Prepares a statement against {name}`db`.
+
+This is a client-side-only operation — see {name}`Stmt`. {name (full := Stmt.paramCount)}`paramCount`
+is found by scanning {name}`sql` for {lit}`$1..$N` placeholders; every parameter starts out
+{lit}`NULL` until bound with {lit}`bindText`/{lit}`bindNull`.
+-/
+def prepare (db : Conn) (sql : String) : IO Stmt := do
+  let paramCount := scanParamCount sql
+  let paramsRef ← IO.mkRef (Array.replicate paramCount none)
+  let execRef ← IO.mkRef none
+  return { conn := db, sql, paramCount, paramsRef, execRef }
+
+namespace Stmt
+
+private def checkIndex (stmt : Stmt) (index : Int32) : IO Unit :=
+  unless 1 ≤ index && index.toNatClampNeg ≤ stmt.paramCount do
+    throw <| IO.userError s!"parameter index {index} out of range (statement has {stmt.paramCount} parameters)"
+
+/-- Binds a string to the host parameter at (1-based) {name}`index`. -/
+def bindText (stmt : Stmt) (index : Int32) (value : String) : IO Unit := do
+  stmt.checkIndex index
+  stmt.paramsRef.modify (·.set! (index.toNatClampNeg - 1) (some value))
+
+/-- Binds {lit}`NULL` to the host parameter at (1-based) {name}`index`. -/
+def bindNull (stmt : Stmt) (index : Int32) : IO Unit := do
+  stmt.checkIndex index
+  stmt.paramsRef.modify (·.set! (index.toNatClampNeg - 1) none)
+
+/--
+Executes the statement, advancing to the next row.
+
+The first call flushes the buffered parameters through {lit}`PQexecParams` and stores the
+resulting buffered result set; later calls just advance a row cursor already held over that
+result. Returns {lean}`true` if a row is available, {lean}`false` if there are no more — or none
+at all, e.g. for {lit}`UPDATE`/{lit}`DELETE`/other non-{lit}`SELECT` commands, which never have
+rows to begin with.
+-/
+def step (stmt : Stmt) : IO Bool := do
+  match ← stmt.execRef.get with
+  | none =>
+    let params ← stmt.paramsRef.get
+    let result ← FFI.execParams stmt.conn.connection stmt.sql params
+    stmt.execRef.set (some (result, 0))
+    return FFI.ntuples result > 0
+  | some (result, cursor) =>
+    let cursor' := cursor + 1
+    stmt.execRef.set (some (result, cursor'))
+    return cursor' < FFI.ntuples result
+
+/-- Executes a statement, disregarding the availability of results. -/
+def exec (stmt : Stmt) : IO Unit := discard stmt.step
+
+private def currentRow (stmt : Stmt) : IO (FFI.Result × Int32) := do
+  match ← stmt.execRef.get with
+  | some rc => return rc
+  | none => throw <| IO.userError "no current row: call `step` (and check that it returned `true`) first"
+
+/-- Extracts the text of the (0-indexed) {name}`column` from the current row. -/
+def columnText (stmt : Stmt) (column : Int32) : IO String := do
+  let (result, cursor) ← stmt.currentRow
+  FFI.getvalue result cursor column
+
+/-- Whether the (0-indexed) {name}`column` is {lit}`NULL` in the current row. -/
+def columnIsNull (stmt : Stmt) (column : Int32) : IO Bool := do
+  let (result, cursor) ← stmt.currentRow
+  return FFI.getisnull result cursor column
+
+end Stmt
 end
 end Postgres

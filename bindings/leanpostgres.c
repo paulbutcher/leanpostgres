@@ -55,3 +55,55 @@ LEAN_EXPORT lean_object *leanpostgres_open(lean_object *conninfo) {
     }
     return lean_io_result_mk_ok(lean_alloc_external(g_pg_conn_class, conn));
 }
+
+// `conn` is borrowed; `sql` and `params` are consumed. Each element of `params` is an
+// `Option String`: `none` (a scalar) becomes a NULL parameter, `some s` becomes `s`'s text.
+// Always runs through `PQexecParams` with null type/format arrays, i.e. text in, text out,
+// per the design's text-only wire format.
+LEAN_EXPORT lean_object *leanpostgres_exec_params(b_lean_obj_arg conn_obj, lean_object *sql, lean_object *params) {
+    PGconn *conn = (PGconn *)lean_get_external_data(conn_obj);
+    const char *sql_str = lean_string_cstr(sql);
+
+    size_t nparams = lean_array_size(params);
+    const char **values = NULL;
+    if (nparams > 0) {
+        values = malloc(sizeof(char *) * nparams);
+        for (size_t i = 0; i < nparams; i++) {
+            lean_object *opt = lean_array_get_core(params, i);
+            values[i] = lean_is_scalar(opt) ? NULL : lean_string_cstr(lean_ctor_get(opt, 0));
+        }
+    }
+
+    PGresult *result = PQexecParams(conn, sql_str, (int)nparams, NULL, values, NULL, NULL, 0);
+
+    free(values);
+    lean_dec(sql);
+    lean_dec(params);
+
+    ExecStatusType status = PQresultStatus(result);
+    if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
+        char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
+        lean_object *err = leanpostgres_mk_error(sqlstate, PQresultErrorMessage(result));
+        PQclear(result);
+        return err;
+    }
+
+    return lean_io_result_mk_ok(lean_alloc_external(g_pg_result_class, result));
+}
+
+LEAN_EXPORT int32_t leanpostgres_ntuples(b_lean_obj_arg result) {
+    return (int32_t)PQntuples((const PGresult *)lean_get_external_data(result));
+}
+
+LEAN_EXPORT int32_t leanpostgres_nfields(b_lean_obj_arg result) {
+    return (int32_t)PQnfields((const PGresult *)lean_get_external_data(result));
+}
+
+LEAN_EXPORT lean_object *leanpostgres_getvalue(b_lean_obj_arg result, int32_t row, int32_t col) {
+    const char *value = PQgetvalue((const PGresult *)lean_get_external_data(result), (int)row, (int)col);
+    return lean_io_result_mk_ok(lean_mk_string(value));
+}
+
+LEAN_EXPORT uint8_t leanpostgres_getisnull(b_lean_obj_arg result, int32_t row, int32_t col) {
+    return PQgetisnull((const PGresult *)lean_get_external_data(result), (int)row, (int)col) != 0;
+}
