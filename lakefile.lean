@@ -83,7 +83,15 @@ lean_lib Postgres where
   moreLinkObjs := #[leanpostgres.o, libpq.so]
   dynlibs := #[leanpostgres.dynlib]
 
+-- Test-support code (the `TestM` success/failure-recording framework), kept as its own library
+-- target — under the package root like `Postgres` above, not under `tests/` — rather than folded
+-- into `testMain`'s exe root, so `TestMain.lean` can `import` it like any other module. Sharing
+-- `tests/` as `srcDir` with the `testMain` exe below confuses Lake's target/module ownership
+-- (it reports a generic "bad imports" error with no further detail), hence the separate root.
+lean_lib PostgresTest
+
 @[test_driver]
 lean_exe testMain where
   root := `TestMain
   srcDir := "tests"
+  needs := #[PostgresTest]
