@@ -1,6 +1,7 @@
 import Postgres
 
 open Postgres
+open Postgres.Interpolation
 
 /-!
 Smoke test: importing `Postgres` pulls in `Postgres.FFI`, whose
@@ -214,6 +215,28 @@ def checkTupleRowIteration (conn : Conn) : IO Unit := do
     throw <| IO.userError s!"expected {expected}, got {rows}"
   IO.println s!"tuple Row + multi-row iteration OK: {rows}"
 
+/-- Exercises `exec!`/`query!` with a mix of literal SQL and interpolated parameters. -/
+def checkInterpolationMacros (conn : Conn) : IO Unit := do
+  conn exec!"CREATE TABLE IF NOT EXISTS leanpostgres_test_interp (id integer, name text, active boolean)"
+  conn exec!"DELETE FROM leanpostgres_test_interp"
+
+  let people : List (Int32 × String × Bool) := [(1, "Alice", true), (2, "Bob", false), (3, "Carol", true)]
+  for (id, name, active) in people do
+    conn exec!"INSERT INTO leanpostgres_test_interp (id, name, active) VALUES ({id}, {name}, {active})"
+
+  let minId : Int32 := 2
+  let rows ←
+    conn query!"SELECT id, name, active FROM leanpostgres_test_interp WHERE id >= {minId} ORDER BY id"
+      as (Int32 × String × Bool)
+  let mut collected : Array (Int32 × String × Bool) := #[]
+  for row in rows do
+    collected := collected.push row
+
+  let expected := #[((2 : Int32), "Bob", false), (3, "Carol", true)]
+  if collected != expected then
+    throw <| IO.userError s!"expected {expected}, got {collected}"
+  IO.println s!"interpolation macros OK: {collected}"
+
 def main : IO Unit := do
   checkFFIInitialized
   checkConnectSuccess
@@ -225,4 +248,5 @@ def main : IO Unit := do
   checkMalformedStatementError conn
   checkCoreTypeRoundTrip conn
   checkTupleRowIteration conn
+  checkInterpolationMacros conn
   IO.println "all checks passed"
