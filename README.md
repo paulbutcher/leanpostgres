@@ -4,7 +4,7 @@
 
 This library provides Lean bindings for Postgres, built directly
 against `libpq`. It's designed as a sibling to
-[leansqlite](https://github.com/leanprover/leansqlite) — the same
+[leansqlite](https://github.com/leanprover/leansqlite); the same
 layering and typeclass-driven design, but a natural Postgres API.
 The library includes a few conveniences on top of the raw C bindings 
 to make working with Postgres more straightforward:
@@ -57,7 +57,7 @@ The build locates `libpq`'s headers and library via `pkg-config` or
 `LEANPOSTGRES_PQ_INCLUDE`/ `LEANPOSTGRES_PQ_LIB` to the header/library
 directories explicitly.
 
-All values cross the wire as text in v1 (no binary protocol support) —
+All values cross the wire as text in v1 (no binary protocol support);
 `PQexecParams` is always called with null parameter/result format
 arrays, matching what mainstream Postgres client libraries do by
 default. Because parameters are passed through `PQexecParams`'s
@@ -84,8 +84,8 @@ lake test
 ```
 
 Every test runs inside a transaction that's rolled back afterward
-regardless of outcome, so the suite doesn't depend on — or leave
-behind — any pre-existing schema or data; it's safe to run repeatedly
+regardless of outcome, so the suite doesn't depend on, or leave
+behind, any pre-existing schema or data; it's safe to run repeatedly
 against the same database. (A handful of tests that exercise
 transaction control itself are the one exception, and clean up their
 own tables explicitly instead.)
