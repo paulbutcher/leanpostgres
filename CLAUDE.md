@@ -28,6 +28,9 @@ Project-specific guidance for Claude Code when working in this repo.
   about the process that led to them.
 - Don't add comments explaining Lean language features or quirks. Readers of this
   project understand Lean and don't need it explaining to them.
+- All files should start with a copyright statement containing:
+  Copyright (c) 2026 Paul Butcher. All rights reserved.
+  Released under Apache 2.0 license as described in the file LICENSE.
   
 ## Environment
 
