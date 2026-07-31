@@ -1,11 +1,13 @@
 import Postgres
 import Postgres.Blob.Deriving
 import PostgresTest.Framework
+import Plausible
 
 open Postgres
 open Postgres.Interpolation
 open Postgres.Blob
 open Postgres.Test
+open Plausible
 
 /--
 Runs `action` inside a transaction that's always rolled back afterward, regardless of outcome —
@@ -648,35 +650,64 @@ deriving QueryParam
 structure Pair where
   x : Nat
   y : String
-deriving BEq, Repr, ToBinary, FromBinary
+deriving BEq, Repr, ToBinary, FromBinary, Arbitrary, Shrinkable
 
 inductive Color where
   | r | g | b
-deriving BEq, Repr, Inhabited, ToBinary, FromBinary
+deriving BEq, Repr, Inhabited, ToBinary, FromBinary, Arbitrary, Shrinkable
 
 inductive Shape where
   | circle (radius : Nat)
   | rect (w : Nat) (h : Nat)
-deriving BEq, Repr, ToBinary, FromBinary
+deriving BEq, Repr, ToBinary, FromBinary, Arbitrary, Shrinkable
 
 inductive Msg where
   | flagged (b : Bool) (s : String)
   | plain (s : String)
-deriving BEq, Repr, ToBinary, FromBinary
+deriving BEq, Repr, ToBinary, FromBinary, Arbitrary, Shrinkable
 
 inductive Cmd where
   | exec (retries : Option Nat) (cmd : String)
   | noop
-deriving BEq, Repr, ToBinary, FromBinary
+deriving BEq, Repr, ToBinary, FromBinary, Arbitrary, Shrinkable
 
 structure Box (α : Type) where
   val : α
-deriving BEq, Repr, ToBinary, FromBinary
+deriving BEq, Repr, ToBinary, FromBinary, Arbitrary, Shrinkable
 
 inductive Tree where
   | leaf (val : Nat)
   | node (left : Tree) (right : Tree)
 deriving BEq, Repr, ToBinary, FromBinary
+
+/--
+`Tree`'s two-child `node` constructor makes Plausible's derived `Arbitrary` unusable: the deriving
+handler decrements fuel by exactly 1 per recursive call but doesn't split it between the two
+children, so both children recurse with the *same* fuel and the expected node count grows
+exponentially in the fuel (i.e. the size parameter). Halving the fuel for each child here keeps
+generated trees' size linear in the size parameter, matching the deriving handler's own convention
+(constructor weights following the QuickChick convention: 1 for `leaf`, remaining fuel for `node`)
+everywhere else.
+-/
+def Tree.arbitraryGo : Nat → Gen Tree
+  | 0 => Tree.leaf <$> Arbitrary.arbitrary
+  | n + 1 => Gen.frequency (Tree.leaf <$> Arbitrary.arbitrary) [
+      (1, Tree.leaf <$> Arbitrary.arbitrary),
+      (n, do
+        let l ← Tree.arbitraryGo (n / 2)
+        let r ← Tree.arbitraryGo (n / 2)
+        return Tree.node l r)
+    ]
+
+instance : Arbitrary Tree where
+  arbitrary := Gen.sized Tree.arbitraryGo
+
+def Tree.shrink : Tree → List Tree
+  | .leaf v => (Shrinkable.shrink v).map Tree.leaf
+  | .node l r => [l, r] ++ (Tree.shrink l).map (Tree.node · r) ++ (Tree.shrink r).map (Tree.node l ·)
+
+instance : Shrinkable Tree where
+  shrink := Tree.shrink
 
 /-- error: None of the deriving handlers for class `ToBinary` applied to `ProofField` -/
 #guard_msgs in
@@ -723,6 +754,37 @@ def testBlobDeriving : TestM Unit :=
     | .ok _ => throw <| IO.userError "expected deserializing an uninhabited type to fail"
 
     recordSuccess "Blob ToBinary/FromBinary deriving OK"
+
+/--
+Checks `roundTrips` over a wide, automatically-generated sample of `α`, shrinking any
+counter-example down to a minimal failing case before reporting it.
+-/
+def checkRoundTripProperty (α : Type) [ToBinary α] [FromBinary α] [BEq α] [Repr α]
+    [Arbitrary α] [Shrinkable α] (label : String) : TestM Unit := do
+  -- `maxSize := 500` (vs. Plausible's default 100) so generated `Nat`s reliably exceed 128 and
+  -- exercise `ToBinary Nat`'s multi-byte varint continuation-bit path, not just its single-byte one.
+  match ← Testable.checkIO (NamedBinder "x" (∀ x : α, roundTrips x)) { maxSize := 500 } with
+  | .success _ => recordSuccess s!"{label}: Blob round trip held across generated examples"
+  | .gaveUp n => throw <| IO.userError s!"{label}: gave up after {n} attempts satisfying preconditions"
+  | .failure _ xs n =>
+    throw <| IO.userError (Testable.formatFailure s!"{label}: found a counter-example" xs n)
+
+/--
+Property-based counterpart to `testBlobDeriving`: runs `Testable.checkIO` over each fixture type
+instead of the hand-picked examples above, sampling a wide, automatically-generated value space
+(large `Nat`s, empty/long/Unicode strings, deeply nested `Tree`s) with automatic shrinking of any
+counter-example found.
+-/
+def testBlobDerivingProperties : TestM Unit :=
+  withHeader "=== Testing Blob ToBinary/FromBinary deriving (property-based) ===" <| guardTest do
+    checkRoundTripProperty Pair "Pair"
+    checkRoundTripProperty Color "Color"
+    checkRoundTripProperty Shape "Shape"
+    checkRoundTripProperty Msg "Msg"
+    checkRoundTripProperty Cmd "Cmd"
+    checkRoundTripProperty (Box Nat) "Box Nat"
+    checkRoundTripProperty (Box String) "Box String"
+    checkRoundTripProperty Tree "Tree"
 
 /-- Round-trips `Postgres.Numeric`, including `NaN`/`Infinity`/`-Infinity` and trailing-zero scale. -/
 def testNumericRoundTrip (conn : Conn) : TestM Unit :=
@@ -1087,6 +1149,7 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testEmailDeriving conn
     testNonEmptyStringQueryParamDeriving conn
     testBlobDeriving
+    testBlobDerivingProperties
     testNumericRoundTrip conn
     testUuidRoundTrip conn
     testDateRoundTrip conn

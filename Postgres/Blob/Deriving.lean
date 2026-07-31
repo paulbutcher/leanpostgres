@@ -191,8 +191,7 @@ def mkToBinaryInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
     return false
 
 /--
-Wraps a constructor in an explicit lambda to prevent {name}`optParam` defaults from reducing the arity.
-Generates `fun f_0 f_1 ... => Ctor f_0 f_1 ...`.
+Wraps a constructor in an explicit lambda: generates `fun f_0 f_1 ... => Ctor f_0 f_1 ...`.
 -/
 private def mkCtorLambda (ctorName : Name) (numFields : Nat) : TermElabM Term := do
   let fieldNames : Array (TSyntax `ident) := (Array.range numFields).map fun i => mkIdent (Name.mkSimple s!"f_{i}")

@@ -26,6 +26,8 @@ Project-specific guidance for Claude Code when working in this repo.
 - Don't mention project plans, milestones, ticket numbers, or anything similar in
   comments. Comments should remain valid years ahead, when people will not care 
   about the process that led to them.
+- Don't add comments explaining Lean language features or quirks. Readers of this
+  project understand Lean and don't need it explaining to them.
   
 ## Environment
 

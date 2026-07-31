@@ -6,6 +6,9 @@ package leanpostgres where
   license := "Apache-2.0"
   leanOptions := #[⟨`experimental.module, true⟩]
 
+require plausible from git
+  "https://github.com/leanprover-community/plausible" @ "v4.32.0"
+
 /-- Runs `pkg-config --variable=<name> libpq`. `none` if pkg-config doesn't know libpq. -/
 unsafe def pkgConfigVarImpl (name : String) : Option String :=
   match unsafeBaseIO (EIO.toBaseIO (IO.Process.output
@@ -91,12 +94,9 @@ target leanpostgres.o pkg : FilePath := do
   let flags := #["-I", leanIncludeDir.toString] ++ libpqCflags
   buildO oFile srcJob flags #[]
 
-/-!
-Also built as a shared library, loaded via `--load-dynlib`.
-`Postgres.FFI`'s `initialize` block runs `leanpostgres_initialize` as
-soon as any module imports it — including `lean`'s own compilation of
-downstream modules in this library — so the native symbol must be
-dlopen-able at that point, not just linked into a final executable.
+/--
+Also built as a shared library, loaded via `--load-dynlib` — needed alongside `leanpostgres.o`
+above, which alone only covers the final executable link.
 -/
 target leanpostgres.dynlib pkg : Dynlib := do
   let libFile := pkg.buildDir / "bindings" / nameToSharedLib "leanpostgres"
@@ -106,17 +106,14 @@ target leanpostgres.dynlib pkg : Dynlib := do
 
 @[default_target]
 lean_lib Postgres where
-  -- Needed so importers of `Postgres.FFI` can run its `initialize` block
-  -- via a dynlib of the module's own compiled code, not just at final link time.
+  -- Needed so importers of `Postgres.FFI` get its native code before the final executable link.
   precompileModules := true
   moreLinkObjs := #[leanpostgres.o, libpq.so]
   dynlibs := #[leanpostgres.dynlib]
 
 -- Test-support code (the `TestM` success/failure-recording framework), kept as its own library
 -- target — under the package root like `Postgres` above, not under `tests/` — rather than folded
--- into `testMain`'s exe root, so `TestMain.lean` can `import` it like any other module. Sharing
--- `tests/` as `srcDir` with the `testMain` exe below confuses Lake's target/module ownership
--- (it reports a generic "bad imports" error with no further detail), hence the separate root.
+-- into `testMain`'s exe root, so `TestMain.lean` can `import` it like any other module.
 lean_lib PostgresTest
 
 @[test_driver]

@@ -78,11 +78,7 @@ private def formatElement (s : String) : String :=
 public def arrayLiteralOf (elems : List (Option String)) : String :=
   "{" ++ String.intercalate "," (elems.map (fun | none => "NULL" | some s => formatElement s)) ++ "}"
 
-/--
-Single-pass array-literal element scanner. Recurses directly on {lit}`chars`'s tail at every step
-(never on a derived sublist computed by a helper call), so it stays within Lean's automatic
-structural-recursion support.
--/
+/-- Single-pass array-literal element scanner. -/
 private def scanArrayElements
     (chars : List Char) (elems : List (Option String)) (cur : List Char)
     (quoted everQuoted escaping : Bool) : Option (List (Option String)) :=

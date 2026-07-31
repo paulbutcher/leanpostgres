@@ -156,7 +156,6 @@ private def mkRowInstanceCmds (ctx : Deriving.Context) (typeNames : Array Name) 
       let binders ← mkImplicitBinders argNames
       -- Use ResultColumn instead of Row for instance binders
       let binders := binders ++ (← mkInstImplicitBinders ``ResultColumn indVal argNames)
-      -- Convert Array Syntax to TSyntaxArray for the quotation
       let binders : TSyntaxArray `Lean.Parser.Term.implicitBinder := binders.map (⟨·⟩)
       let indType ← mkInductiveApp indVal argNames
       let type ← `(Row $indType)
