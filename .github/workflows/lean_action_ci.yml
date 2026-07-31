@@ -11,7 +11,7 @@ jobs:
 
     services:
       postgres:
-        # Pinned to match the version used in local dev (see .devcontainer) — M7's Numeric tests
+        # Pinned to match the version used in local dev (see .devcontainer); M7's Numeric tests
         # exercise NaN/Infinity support (added in Postgres 14), so this needs to stay at least that
         # recent, but keeping it in sync with dev avoids any other version-skew surprises too.
         image: postgres:18

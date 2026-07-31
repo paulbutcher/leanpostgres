@@ -14,7 +14,7 @@ open Postgres.Test
 open Plausible
 
 /--
-Runs `action` inside a transaction that's always rolled back afterward, regardless of outcome —
+Runs `action` inside a transaction that's always rolled back afterward, regardless of outcome;
 keeps each test's writes from leaking into the next test, or into a re-run against the same
 database. Tests that are themselves about transaction control (`BEGIN`/`COMMIT`/`ROLLBACK`
 semantics) don't use this, since Postgres has no true nested transactions: a real `commit`/
@@ -67,7 +67,7 @@ Statement lifecycle: parameterized `INSERT`/`SELECT` (incl. bound `NULL` and mul
 `step` returning `false` immediately for a query matching no rows, and `UPDATE`/`DELETE` executing
 fine via `exec` despite never having rows to step over. Merged into one test (rather than three, as
 in earlier milestones) because the pieces build on each other's inserted rows within a single
-transaction — after M9's move to rollback-per-test isolation, splitting them apart would leave each
+transaction; after M9's move to rollback-per-test isolation, splitting them apart would leave each
 piece unable to see the previous one's writes.
 -/
 def testStatementLifecycle (conn : Conn) : TestM Unit :=
@@ -265,7 +265,7 @@ def testInterpolationMacros (conn : Conn) : TestM Unit :=
 /--
 `beginTransaction` generates valid `BEGIN` text for every `TransactionOptions` combination.
 
-Not wrapped in `withRollback` — it's exercising `BEGIN`/`ROLLBACK` directly, and Postgres has no
+Not wrapped in `withRollback`; it's exercising `BEGIN`/`ROLLBACK` directly, and Postgres has no
 true nested transactions, so an enclosing wrapper transaction would just get ended by the first
 iteration's `rollback conn` instead of a fresh one starting per iteration.
 -/
@@ -288,7 +288,7 @@ def testTransactionOptionsCombinations (conn : Conn) : TestM Unit :=
 /--
 `transaction` commits on success and rolls back on a thrown exception.
 
-Not wrapped in `withRollback` for the same reason as `testTransactionOptionsCombinations` — this
+Not wrapped in `withRollback` for the same reason as `testTransactionOptionsCombinations`; this
 test's whole point is exercising real commits/rollbacks, which an enclosing wrapper transaction
 would interfere with. Cleans up its own table with `DELETE FROM` at the start instead, same as
 every M1–M8 test did before the rollback-per-test wrapper existed.
@@ -324,7 +324,7 @@ def testTransactionCommitAndRollback (conn : Conn) : TestM Unit :=
     recordSuccess "transaction commit/rollback OK"
 
 /--
-A unique-constraint violation surfaces as SQLSTATE `23505`, not just a message string — asserting
+A unique-constraint violation surfaces as SQLSTATE `23505`, not just a message string; asserting
 on the code (not the message) is the behavior callers are meant to rely on.
 -/
 def testUniqueViolationSqlstate (conn : Conn) : TestM Unit :=
@@ -569,7 +569,7 @@ structure NonEmptyString where
   nonEmpty : val.length > 0
 deriving QueryParam
 
-/-- `QueryParam` deriving ignores proof fields — only `val` is bound. -/
+/-- `QueryParam` deriving ignores proof fields; only `val` is bound. -/
 def testNonEmptyStringQueryParamDeriving (conn : Conn) : TestM Unit :=
   withHeader "=== Testing NonEmptyString QueryParam deriving ===" <| withRollback conn <| guardTest do
     conn exec!"CREATE TABLE IF NOT EXISTS leanpostgres_test_nonempty_strings (val text NOT NULL)"
@@ -928,7 +928,7 @@ def testTimestampRoundTrip (conn : Conn) : TestM Unit :=
 
 /--
 Round-trips `Std.Time.DateTime` through a real `timestamptz` column, with the session `TimeZone`
-explicitly pinned to UTC first — Postgres normalizes `timestamptz` display to the session zone, so
+explicitly pinned to UTC first; Postgres normalizes `timestamptz` display to the session zone, so
 an unpinned test would be a flaky, environment-dependent check. Pinning it via plain `SET` inside
 `withRollback`'s transaction confines the change to this test alone (a transactional `SET` reverts
 on rollback), rather than leaking into the session for every test that runs after this one.
@@ -1067,7 +1067,7 @@ def testColumnMetadata (conn : Conn) : TestM Unit :=
 /--
 `commandTag`/`commandTuples`/`isReadOnly` across `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`BEGIN`.
 
-Not wrapped in `withRollback` — it deliberately issues its own `BEGIN`/`ROLLBACK` (to check
+Not wrapped in `withRollback`; it deliberately issues its own `BEGIN`/`ROLLBACK` (to check
 `isReadOnly`'s classification of them), which would conflict with an enclosing wrapper transaction
 the same way it would in `testTransactionOptionsCombinations`/`testTransactionCommitAndRollback`.
 Cleans up its own table with `DELETE FROM` at the start instead.

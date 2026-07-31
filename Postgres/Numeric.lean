@@ -21,7 +21,7 @@ A faithful carrier for Postgres's arbitrary-precision {lit}`numeric`/{lit}`decim
 {lit}`ofDigits`'s {lit}`unscaled`/{lit}`scale` pair is the unscaled integer value and the number
 of digits after the decimal point (so the represented value is {lit}`unscaled * 10 ^ (-scale)`),
 which lets round-tripping preserve trailing zeros exactly as Postgres printed them (e.g.
-{lit}`123.4500`). No arithmetic is provided on {name}`Numeric` itself in v1 — use {lit}`toFloat`/
+{lit}`123.4500`). No arithmetic is provided on {name}`Numeric` itself in v1; use {lit}`toFloat`/
 {lit}`toInt?` for lossy conversions where that's acceptable to the caller.
 -/
 public inductive Numeric where

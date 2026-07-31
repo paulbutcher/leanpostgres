@@ -19,7 +19,7 @@ public section
 A Postgres {lit}`time`/{lit}`time with time zone` value.
 
 {lit}`offset` is {lean}`none` for a plain {lit}`time` (no zone) and {lean}`some` a UTC offset for
-{lit}`timetz` — which of the two is meant is determined entirely by whether the caller sets this
+{lit}`timetz`, which of the two is meant is determined entirely by whether the caller sets this
 field, not by any separate type. There's no bundled {lit}`Std.Time` type combining a bare
 time-of-day with an optional zone, so this composes {lit}`Std.Time`'s own
 {name (full := Std.Time.PlainTime)}`PlainTime` and {name (full := Std.Time.TimeZone.Offset)}`Offset`

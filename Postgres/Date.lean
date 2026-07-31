@@ -22,7 +22,7 @@ public def dateToText (d : Std.Time.PlainDate) : String :=
 /--
 Parses Postgres {lit}`date` text ({lit}`YYYY-MM-DD`).
 
-BC dates are out of scope for v1 — returns {lean}`none` for Postgres's {lit}`BC`-suffixed text
+BC dates are out of scope for v1; returns {lean}`none` for Postgres's {lit}`BC`-suffixed text
 form.
 -/
 public def dateOfText? (s : String) : Option Std.Time.PlainDate := do

@@ -36,7 +36,7 @@ public def hexToByteArray? (s : String) : Option ByteArray := do
 
 /--
 Renders {lit}`f` as the exact decimal value of its IEEE 754 bit pattern (not the shortest
-round-tripping decimal), so that parsing the result back always reproduces the original bits —
+round-tripping decimal), so that parsing the result back always reproduces the original bits;
 Postgres accepts arbitrarily long numeric literals for {lit}`real`/{lit}`double precision`, so
 there's no need for a shortest-decimal algorithm here.
 -/

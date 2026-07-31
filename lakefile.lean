@@ -55,7 +55,7 @@ opaque getEnv' (name : String) : Option String := none
 /--
 `-I` flags for the libpq headers: `LEANPOSTGRES_PQ_INCLUDE` override, else
 `pkg-config`'s `includedir` (queried directly rather than via `--cflags`,
-since `pkg-config` omits `-I` entirely for dirs it considers "standard" —
+since `pkg-config` omits `-I` entirely for dirs it considers "standard",
 which the Lean toolchain's bundled clang/lld don't necessarily search), else
 (macOS) `brew --prefix libpq`'s `include` directory.
 -/
@@ -72,7 +72,7 @@ Full path to the system `libpq` shared library, linked in by path rather
 than as a bare `-lpq`/`-L<dir>` pair. `pkg-config`'s resolved `libdir` here
 is frequently *also* a standard system library directory (e.g.
 `/usr/lib/aarch64-linux-gnu`); adding it as an early `-L` search path would
-take priority over — and can shadow — the Lean toolchain's own bundled
+take priority over, and can shadow, the Lean toolchain's own bundled
 glibc directories later in the link line, breaking the final executable
 link in a way that's silent and highly toolchain/platform-specific to
 debug (it manifests as missing glibc-internal symbols, not anything
@@ -99,7 +99,7 @@ target leanpostgres.o pkg : FilePath := do
   buildO oFile srcJob flags #[]
 
 /--
-Also built as a shared library, loaded via `--load-dynlib` — needed alongside `leanpostgres.o`
+Also built as a shared library, loaded via `--load-dynlib`, needed alongside `leanpostgres.o`
 above, which alone only covers the final executable link.
 -/
 target leanpostgres.dynlib pkg : Dynlib := do
@@ -116,7 +116,7 @@ lean_lib Postgres where
   dynlibs := #[leanpostgres.dynlib]
 
 -- Test-support code (the `TestM` success/failure-recording framework), kept as its own library
--- target — under the package root like `Postgres` above, not under `tests/` — rather than folded
+-- target, under the package root like `Postgres` above, not under `tests/`, rather than folded
 -- into `testMain`'s exe root, so `TestMain.lean` can `import` it like any other module.
 lean_lib PostgresTest
 

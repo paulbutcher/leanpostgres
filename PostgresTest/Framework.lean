@@ -83,7 +83,7 @@ def expect (cond : Bool) (msg : String) : TestM Unit :=
 
 /--
 Runs a whole test body, converting any escaping exception into a single recorded failure instead
-of aborting the rest of the suite — every test in `tests/TestMain.lean` is wrapped in this so one
+of aborting the rest of the suite; every test in `tests/TestMain.lean` is wrapped in this so one
 test's setup failure doesn't silently skip everything after it.
 -/
 def guardTest (action : TestM Unit) : TestM Unit :=

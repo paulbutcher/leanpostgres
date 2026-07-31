@@ -17,7 +17,7 @@ public section
 
 /--
 Pure text encode/decode for a 1-D array's element type. {name}`QueryParam`/{name}`ResultColumn`
-only expose {lit}`Stmt`-bound binding/reading, not a standalone text conversion — this fills that
+only expose {lit}`Stmt`-bound binding/reading, not a standalone text conversion; this fills that
 gap for the scalar types array literals are built from.
 -/
 public class ArrayElem (α : Type) where

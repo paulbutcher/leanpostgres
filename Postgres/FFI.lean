@@ -33,7 +33,7 @@ public instance : Repr Result where
 opaque «open» : String → IO Conn
 
 /--
-Executes `sql` with the given parameters via `PQexecParams` (text format throughout — every
+Executes `sql` with the given parameters via `PQexecParams` (text format throughout; every
 element of `params` is either `none` for SQL `NULL` or `some` already-encoded text). Returns the
 buffered result set, or throws a `Postgres.Error`-shaped error if `PQresultStatus` isn't
 `PGRES_TUPLES_OK`/`PGRES_COMMAND_OK`.

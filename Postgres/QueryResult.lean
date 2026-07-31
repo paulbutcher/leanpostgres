@@ -25,7 +25,7 @@ public class ResultColumn (α : Type) where
 
 /--
 Reads a nullable column, checking {name (full := Stmt.columnIsNull)}`columnIsNull` directly
-rather than consulting the column's Postgres type (OID) — {name}`ResultColumn` instances trust
+rather than consulting the column's Postgres type (OID); {name}`ResultColumn` instances trust
 the caller's declared Lean type, not the schema, so there is no OID to fall back on here either.
 -/
 public instance [ResultColumn α] : ResultColumn (Option α) where

@@ -27,7 +27,7 @@ Opens a connection to Postgres.
 
 {name}`conninfo` is a standard libpq connection string (e.g.
 {lit}`"host=localhost dbname=app user=app"`) or URI (e.g.
-{lit}`"postgresql://user:pass@host:5432/dbname?sslmode=require"`) — libpq parses it directly, so
+{lit}`"postgresql://user:pass@host:5432/dbname?sslmode=require"`); libpq parses it directly, so
 no bespoke parsing happens here. An empty string tells libpq to use its own defaults, which fall
 back to the standard {lit}`PG*` environment variables ({lit}`PGHOST`, {lit}`PGUSER`,
 {lit}`PGDATABASE`, etc.).
@@ -35,7 +35,7 @@ back to the standard {lit}`PG*` environment variables ({lit}`PGHOST`, {lit}`PGUS
 On failure, throws an {name (full := IO.Error)}`IO.Error` carrying a {name}`Postgres.Error`
 (recoverable via {name}`Postgres.Error.ofIOError?`) built from libpq's connection error message.
 Connection-level failures have no SQLSTATE, so {name}`Postgres.Error.sqlstate` is empty in this
-case — a real SQLSTATE only shows up once a connection exists and a statement is executed on it.
+case; a real SQLSTATE only shows up once a connection exists and a statement is executed on it.
 -/
 def «open» (conninfo : String) : IO Conn := do
   let connection ← FFI.«open» conninfo
@@ -44,7 +44,7 @@ def «open» (conninfo : String) : IO Conn := do
 /--
 A prepared statement: SQL text plus a client-side buffer of parameters to bind before executing.
 
-There is no server-side prepared-statement object or name — {lit}`prepare` never round-trips
+There is no server-side prepared-statement object or name; {lit}`prepare` never round-trips
 to the server. Parameters and the executed result are held in mutable references because,
 unlike {lit}`sqlite3_stmt`, {name}`Stmt` has no backing C object of its own to mutate directly.
 -/
@@ -62,7 +62,7 @@ structure Stmt where
 Scans {name}`sql` for the highest {lit}`$N` placeholder and returns {lit}`N` (0 if there are
 none).
 
-This is a plain text scan, not a SQL parser — a dollar sign inside a string literal or comment
+This is a plain text scan, not a SQL parser; a dollar sign inside a string literal or comment
 that happens to be followed by digits (e.g. {lit}`'$5 off'`) is indistinguishable from a real
 placeholder and would inflate the count. This only risks *over*-counting, though: a phantom
 extra parameter slot just stays unbound ({lit}`NULL`), it doesn't shift or misbind a real one.
@@ -85,7 +85,7 @@ where
 /--
 Prepares a statement against {name}`db`.
 
-This is a client-side-only operation — see {name}`Stmt`. {name (full := Stmt.paramCount)}`paramCount`
+This is a client-side-only operation; see {name}`Stmt`. {name (full := Stmt.paramCount)}`paramCount`
 is found by scanning {name}`sql` for {lit}`$1..$N` placeholders; every parameter starts out
 {lit}`NULL` until bound with {lit}`bindText`/{lit}`bindNull`.
 -/
@@ -116,7 +116,7 @@ Executes the statement, advancing to the next row.
 
 The first call flushes the buffered parameters through {lit}`PQexecParams` and stores the
 resulting buffered result set; later calls just advance a row cursor already held over that
-result. Returns {lean}`true` if a row is available, {lean}`false` if there are no more — or none
+result. Returns {lean}`true` if a row is available, {lean}`false` if there are no more, or none
 at all, e.g. for {lit}`UPDATE`/{lit}`DELETE`/other non-{lit}`SELECT` commands, which never have
 rows to begin with.
 -/
@@ -153,11 +153,11 @@ def columnIsNull (stmt : Stmt) (column : Int32) : IO Bool := do
 private def currentResult (stmt : Stmt) : IO FFI.Result := Prod.fst <$> stmt.currentRow
 
 /--
-Returns the name of the (0-indexed) result column — its output name, i.e. its {lit}`AS`-alias if
+Returns the name of the (0-indexed) result column, its output name, i.e. its {lit}`AS`-alias if
 one was given.
 
 Like every function below, this needs the statement to have already been executed at least once
-(see {name}`step`) — unlike SQLite, which compiles/plans a statement upfront at
+(see {name}`step`); unlike SQLite, which compiles/plans a statement upfront at
 {name (full := Postgres.prepare)}`prepare` time, Postgres has no result metadata at all until a
 command has actually run.
 -/
@@ -174,7 +174,7 @@ def commandTag (stmt : Stmt) : IO String := do
 /--
 Returns the number of rows affected/retrieved by an {lit}`INSERT`/{lit}`UPDATE`/{lit}`DELETE`/
 {lit}`SELECT` (or {lit}`MOVE`/{lit}`FETCH`/{lit}`COPY`), or {lean}`none` if the command doesn't
-produce one (e.g. a DDL statement) — replaces SQLite's per-statement {lit}`changes`.
+produce one (e.g. a DDL statement); replaces SQLite's per-statement {lit}`changes`.
 -/
 def commandTuples (stmt : Stmt) : IO (Option Int64) := do
   let s ← FFI.cmdTuples (← stmt.currentResult)
@@ -187,7 +187,7 @@ private def readOnlyCommandHeads : List String :=
   ["SELECT", "SHOW", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK"]
 
 /--
-Whether the executed statement is read-only, derived from its {name}`commandTag` — replaces
+Whether the executed statement is read-only, derived from its {name}`commandTag`; replaces
 SQLite's {lit}`sqlite3_stmt_readonly`, which determines this statically before execution. Postgres
 has no equivalent static check (statements aren't parsed/planned client-side here), so this is
 only available after {name}`step` has been called at least once, and only classifies the common
@@ -208,7 +208,7 @@ Returns the name of the table a result column directly references, via an extra 
 lookup on the column's table OID ({lit}`PQftable`). Empty if the column isn't a direct
 table-column reference (e.g. a computed expression), or the table has since been dropped.
 
-This is an extra round trip to the server that {name}`columnName` doesn't need — avoid it on a hot
+This is an extra round trip to the server that {name}`columnName` doesn't need; avoid it on a hot
 path if you don't need it.
 -/
 def columnTableName (stmt : Stmt) (column : Int32) : IO String := do
@@ -226,7 +226,7 @@ plus an extra {lit}`pg_attribute` lookup. For an aliased column (e.g.
 ({lit}`user_name`), while {name}`columnName` returns the alias ({lit}`name`). Empty if the column
 isn't a direct table-column reference.
 
-Like {name}`columnTableName`, this is an extra round trip to the server — avoid it on a hot path
+Like {name}`columnTableName`, this is an extra round trip to the server; avoid it on a hot path
 if you don't need it.
 -/
 def columnOriginName (stmt : Stmt) (column : Int32) : IO String := do
@@ -244,7 +244,7 @@ def columnOriginName (stmt : Stmt) (column : Int32) : IO String := do
 /--
 Returns the connection's current database name, ignoring {name}`column`. Unlike SQLite (where
 {lit}`ATTACH DATABASE` lets one connection span several databases, hence a per-column database
-name), a single Postgres connection always addresses exactly one database — this is simply
+name), a single Postgres connection always addresses exactly one database; this is simply
 {name}`Conn`-level metadata, not something that can vary by result column.
 -/
 def columnDatabaseName (stmt : Stmt) (column : Int32) : IO String := do
