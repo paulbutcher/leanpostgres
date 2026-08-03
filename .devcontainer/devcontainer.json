@@ -2,7 +2,13 @@
 	"name": "Ubuntu",
 	"build": { "dockerfile": "Dockerfile" },
 
-	"containerEnv": {
+  // Store Claude's persistent state on the host
+  "mounts": [
+    "source=${localEnv:HOME}/.claude-devcontainer,target=/home/vscode/.claude,type=bind,consistency=cached"
+  ],
+
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
     "PGHOST": "host.docker.internal",
     "PGPORT": "5432",
     "PGUSER": "leanpostgres",
