@@ -80,3 +80,68 @@ private opaque ftablecol : @&Result → Int32 → Int32
 /-- The connection's current database name. -/
 @[extern "leanpostgres_db"]
 private opaque db : @&Conn → IO String
+
+-- --- Non-blocking query execution, driven by `Postgres.Async`'s poller loop. ---
+
+/--
+Switches `conn` into (`enable = true`) or out of (`enable = false`) libpq's non-blocking mode.
+Required before `sendQueryParams`/`flush`/`consumeInput`/`getResult` will avoid blocking; sync
+`step`/`exec` (via `execParams`) is documented by libpq as unreliable on a connection left in
+non-blocking mode, so callers must restore blocking mode once done.
+-/
+@[extern "leanpostgres_set_nonblocking"]
+private opaque setNonblocking : @&Conn → Bool → IO Unit
+
+/-- The connection's underlying socket file descriptor, to wait on via `poll`. -/
+@[extern "leanpostgres_socket"]
+private opaque socket : @&Conn → Int32
+
+/--
+Queues `sql`/`params` for asynchronous execution via `PQsendQueryParams`; returns once the command
+has been queued, not once it's complete. `conn` must already be in non-blocking mode (`setNonblocking
+conn true`). Same parameter encoding as `execParams`.
+-/
+@[extern "leanpostgres_send_query_params"]
+private opaque sendQueryParams : @&Conn → String → Array (Option String) → IO Unit
+
+/--
+Attempts to send any data still buffered from `sendQueryParams`. Returns `true` if more remains to
+be flushed once the socket is next writable, `false` once fully flushed.
+-/
+@[extern "leanpostgres_flush"]
+private opaque flush : @&Conn → IO Bool
+
+/--
+Reads whatever is currently available from the socket into libpq's internal buffers; doesn't block.
+Call once the socket is reported readable, then re-check `isBusy`.
+-/
+@[extern "leanpostgres_consume_input"]
+private opaque consumeInput : @&Conn → IO Unit
+
+/--
+Whether fetching the result via `getResult` would currently block. Just inspects already-buffered
+state (no socket I/O), so unlike `flush`/`consumeInput` this can't fail.
+-/
+@[extern "leanpostgres_is_busy"]
+private opaque isBusy : @&Conn → Bool
+
+/--
+Fetches the result of the command sent via `sendQueryParams`, once `isBusy` reports `false`. Same
+error/status-checking behavior as `execParams`.
+-/
+@[extern "leanpostgres_get_result"]
+private opaque getResult : @&Conn → IO Result
+
+-- --- Generic socket-readiness polling, backing `Postgres.Async`'s single poller loop. ---
+
+/--
+Blocks until at least one of `fds[i]` becomes ready for reading (`wantWrite[i] = false`) or writing
+(`wantWrite[i] = true`), or `wake` is called from another thread. Returns a same-length array of
+which entries are ready. `fds` and `wantWrite` must be the same length.
+-/
+@[extern "leanpostgres_poll"]
+private opaque poll : Array Int32 → Array Bool → IO (Array Bool)
+
+/-- Wakes a `poll` call blocked in another thread, e.g. after registering a new wait. -/
+@[extern "leanpostgres_wake"]
+private opaque wake : IO Unit

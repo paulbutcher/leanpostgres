@@ -12,6 +12,7 @@ open Postgres.Interpolation
 open Postgres.Blob
 open Postgres.Test
 open Plausible
+open Std.Async (Async)
 
 /--
 Runs `action` inside a transaction that's always rolled back afterward, regardless of outcome;
@@ -133,6 +134,131 @@ def testMalformedStatementError (conn : Conn) : TestM Unit :=
         if pgErr.sqlstate != "42601" then
           throw <| IO.userError s!"expected SQLSTATE 42601, got: {pgErr}"
         recordSuccess s!"malformed statement correctly surfaced SQLSTATE 42601: {pgErr}"
+
+/--
+Asynchronous counterpart to `testStatementLifecycle`: the same parameterized INSERT/SELECT/
+UPDATE/DELETE lifecycle, but driven through `stepAsync`/`execAsync` and run via `Async.block`
+instead of directly as `IO`.
+-/
+def testAsyncStatementLifecycle (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing statement lifecycle (async bind/stepAsync/execAsync) ===" <| withRollback conn <| guardTest do
+    let create ← prepare conn "CREATE TABLE IF NOT EXISTS leanpostgres_test_async_stmt (id integer, name text)"
+    create.execAsync.block
+
+    let insert1 ← prepare conn "INSERT INTO leanpostgres_test_async_stmt (id, name) VALUES ($1, $2)"
+    insert1.bindText 1 "1"
+    insert1.bindText 2 "Alice"
+    insert1.execAsync.block
+
+    let insert2 ← prepare conn "INSERT INTO leanpostgres_test_async_stmt (id, name) VALUES ($1, $2)"
+    insert2.bindText 1 "2"
+    insert2.bindNull 2
+    insert2.execAsync.block
+
+    let select ← prepare conn "SELECT id, name FROM leanpostgres_test_async_stmt ORDER BY id"
+    let mut hasRow ← select.stepAsync.block
+    let mut rows : Array (String × Option String) := #[]
+    while hasRow do
+      let id ← select.columnText 0
+      let name ← if ← select.columnIsNull 1 then pure none else some <$> select.columnText 1
+      rows := rows.push (id, name)
+      hasRow ← select.stepAsync.block
+
+    let expected := #[("1", some "Alice"), ("2", none)]
+    if rows != expected then
+      throw <| IO.userError s!"expected {expected}, got {rows}"
+    recordSuccess s!"async parameterized round trip OK: {rows}"
+
+    let selectMissing ← prepare conn "SELECT id FROM leanpostgres_test_async_stmt WHERE id = $1"
+    selectMissing.bindText 1 "999"
+    if ← selectMissing.stepAsync.block then
+      throw <| IO.userError "expected no rows for id = 999"
+    recordSuccess "empty result set correctly returns false immediately (async)"
+
+    let update ← prepare conn "UPDATE leanpostgres_test_async_stmt SET name = $1 WHERE id = $2"
+    update.bindText 1 "Alicia"
+    update.bindText 2 "1"
+    update.execAsync.block
+
+    let delete ← prepare conn "DELETE FROM leanpostgres_test_async_stmt WHERE id = $1"
+    delete.bindText 1 "2"
+    delete.execAsync.block
+
+    recordSuccess "async UPDATE/DELETE executed without error"
+
+/-- Async counterpart to `testMalformedStatementError`: same SQLSTATE 42601 surfaced via `stepAsync`. -/
+def testAsyncMalformedStatementError (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing malformed statement error (async) ===" <| withRollback conn <| guardTest do
+    let badStmt ← prepare conn "SELEKT * FROM nonexistent_syntax_error"
+    let caught ← try
+        let _ ← badStmt.stepAsync.block
+        pure (none : Option IO.Error)
+      catch e => pure (some e)
+    match caught with
+    | none => throw <| IO.userError "expected a syntax error, but the statement succeeded"
+    | some e =>
+      match Error.ofIOError? e with
+      | none => throw <| IO.userError s!"expected a Postgres.Error, got: {e}"
+      | some pgErr =>
+        if pgErr.sqlstate != "42601" then
+          throw <| IO.userError s!"expected SQLSTATE 42601, got: {pgErr}"
+        recordSuccess s!"async malformed statement correctly surfaced SQLSTATE 42601: {pgErr}"
+
+/--
+Confirms `stepAsync` restores the connection to blocking mode before returning (see
+`ASYNC_DECISIONS.md`): a sync `step` issued right after an async one on the *same* connection must
+keep working exactly as it did before any async call ever touched this connection.
+-/
+def testAsyncThenSyncInterleaving (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing async then sync interleaving on the same connection ===" <| withRollback conn <| guardTest do
+    let create ← prepare conn "CREATE TABLE IF NOT EXISTS leanpostgres_test_async_interleave (id integer)"
+    create.execAsync.block
+
+    let insertAsync ← prepare conn "INSERT INTO leanpostgres_test_async_interleave (id) VALUES ($1)"
+    insertAsync.bindText 1 "1"
+    insertAsync.execAsync.block
+
+    let insertSync ← prepare conn "INSERT INTO leanpostgres_test_async_interleave (id) VALUES ($1)"
+    insertSync.bindText 1 "2"
+    insertSync.exec
+
+    let select ← prepare conn "SELECT id FROM leanpostgres_test_async_interleave ORDER BY id"
+    let mut hasRow ← select.step
+    let mut ids : Array String := #[]
+    while hasRow do
+      ids := ids.push (← select.columnText 0)
+      hasRow ← select.step
+
+    if ids != #["1", "2"] then
+      throw <| IO.userError s!"expected [1, 2], got {ids}"
+    recordSuccess "async stepAsync followed by sync step on the same connection both worked"
+
+/--
+Runs `stepAsync` queries concurrently across two separate connections (a single connection can
+only have one command in flight, matching sync `step`'s existing restriction), confirming the
+shared background poller correctly drives multiple in-flight waits at once via
+`Std.Async.Async.concurrently`. Not asserting on wall-clock timing (flaky on shared CI runners);
+this checks correctness of the interleaved execution, not speedup.
+-/
+def testAsyncConcurrentQueries : TestM Unit :=
+  withHeader "=== Testing concurrent async queries across two connections ===" <| guardTest do
+    let connA ← «open» ""
+    let connB ← «open» ""
+
+    let selectA ← prepare connA "SELECT pg_sleep(0.2), 1"
+    let selectB ← prepare connB "SELECT pg_sleep(0.2), 2"
+
+    let (resA, resB) ← (Async.concurrently selectA.stepAsync selectB.stepAsync).block
+
+    if !resA || !resB then
+      throw <| IO.userError s!"expected both concurrent queries to return rows, got ({resA}, {resB})"
+
+    let valA ← selectA.columnText 1
+    let valB ← selectB.columnText 1
+    if valA != "1" || valB != "2" then
+      throw <| IO.userError s!"expected (1, 2), got ({valA}, {valB})"
+
+    recordSuccess "concurrent async queries across two connections OK"
 
 /--
 Round-trips every M3 core type through `QueryParam`/`ResultColumn`, including bound and read
@@ -1137,6 +1263,10 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testConnectFailure
     testStatementLifecycle conn
     testMalformedStatementError conn
+    testAsyncStatementLifecycle conn
+    testAsyncMalformedStatementError conn
+    testAsyncThenSyncInterleaving conn
+    testAsyncConcurrentQueries
     testCoreTypeRoundTrip conn
     testTupleRowIteration conn
     testInterpolationMacros conn
@@ -1178,5 +1308,9 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     report s!"\n{finalStats.failures} test(s) failed!"
     return 1
 
-def main (args : List String) : IO UInt32 :=
-  runTests (verbose := args.contains "--verbose")
+def main (args : List String) : IO UInt32 := do
+  let code ← runTests (verbose := args.contains "--verbose")
+  -- Required after using any async functionality (`testAsync*` above did): otherwise the process
+  -- hangs on exit instead of terminating. See `Postgres.Async.shutdown`'s docstring.
+  Postgres.Async.shutdown
+  return code

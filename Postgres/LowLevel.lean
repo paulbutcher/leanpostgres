@@ -6,6 +6,7 @@ module
 import all Postgres.FFI
 public import Postgres.FFI
 public import Postgres.Error
+public import Postgres.Async
 
 set_option doc.verso true
 set_option linter.missingDocs true
@@ -13,6 +14,8 @@ set_option linter.missingDocs true
 namespace Postgres
 
 public section
+
+open Std.Async (Async EAsync)
 
 /-- A connection to a Postgres database. -/
 structure Conn where
@@ -134,6 +137,63 @@ def step (stmt : Stmt) : IO Bool := do
 
 /-- Executes a statement, disregarding the availability of results. -/
 def exec (stmt : Stmt) : IO Unit := discard stmt.step
+
+/--
+Keeps flushing `conn`'s buffered outbound data (from `FFI.sendQueryParams`) until none remains,
+waiting for the socket to become writable in between attempts rather than blocking on it.
+-/
+private partial def flushFully (conn : FFI.Conn) : Async Unit := do
+  if ← EAsync.lift (FFI.flush conn) then
+    Postgres.Async.waitSocketAsync (FFI.socket conn) true
+    flushFully conn
+
+/--
+Waits for `conn`'s in-flight command to finish, alternating between waiting for the socket to
+become readable and feeding newly-arrived bytes to libpq via `FFI.consumeInput`, until
+`FFI.isBusy` reports the result is ready to fetch.
+-/
+private partial def waitUntilNotBusy (conn : FFI.Conn) : Async Unit := do
+  if FFI.isBusy conn then
+    Postgres.Async.waitSocketAsync (FFI.socket conn) false
+    EAsync.lift (FFI.consumeInput conn)
+    waitUntilNotBusy conn
+
+/--
+Asynchronous counterpart to {name}`step`: doesn't block the calling thread while waiting on the
+network round trip, so it composes with other {name (full := Std.Async.Async)}`Async` work (via
+{name (full := Std.Async.await)}`await`/{name (full := Std.Async.Async.concurrently)}`concurrently`/etc.)
+without pinning an OS thread per in-flight query.
+
+Drives the same underlying connection through libpq's non-blocking API
+({lit}`PQsendQueryParams`/{lit}`PQflush`/{lit}`PQconsumeInput`/{lit}`PQgetResult`) instead of the
+blocking {lit}`PQexecParams` {name}`step` uses; the connection is switched into non-blocking mode
+only for the duration of this call and always switched back before returning (even on error),
+since libpq documents sync {lit}`PQexecParams` as unreliable on a connection left in non-blocking
+mode. As with {name}`step`, only the first call (per {name}`prepare`d statement) does a real round
+trip; later calls just advance the already-fetched result's row cursor and return immediately.
+-/
+def stepAsync (stmt : Stmt) : Async Bool := do
+  match ← EAsync.lift stmt.execRef.get with
+  | none =>
+    let params ← EAsync.lift stmt.paramsRef.get
+    let conn := stmt.conn.connection
+    EAsync.lift (FFI.setNonblocking conn true)
+    try
+      EAsync.lift (FFI.sendQueryParams conn stmt.sql params)
+      flushFully conn
+      waitUntilNotBusy conn
+      let result ← EAsync.lift (FFI.getResult conn)
+      EAsync.lift (stmt.execRef.set (some (result, 0)))
+      return FFI.ntuples result > 0
+    finally
+      EAsync.lift (FFI.setNonblocking conn false)
+  | some (result, cursor) =>
+    let cursor' := cursor + 1
+    EAsync.lift (stmt.execRef.set (some (result, cursor')))
+    return cursor' < FFI.ntuples result
+
+/-- Asynchronous counterpart to {name}`exec`; see {name}`stepAsync`. -/
+def execAsync (stmt : Stmt) : Async Unit := discard stmt.stepAsync
 
 private def currentRow (stmt : Stmt) : IO (FFI.Result × Int32) := do
   match ← stmt.execRef.get with
