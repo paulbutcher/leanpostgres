@@ -116,6 +116,48 @@ def testStatementLifecycle (conn : Conn) : TestM Unit :=
 
     recordSuccess "UPDATE/DELETE executed without error"
 
+/-- `execScript` runs several `;`-separated statements in one call, including ones that produce
+result rows (which are discarded), and later statements see earlier ones' effects. -/
+def testExecScriptMultiStatement (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing execScript (multi-statement) ===" <| withRollback conn <| guardTest do
+    execScript conn
+      "CREATE TABLE leanpostgres_test_script (id integer);
+       INSERT INTO leanpostgres_test_script VALUES (1);
+       INSERT INTO leanpostgres_test_script VALUES (2);
+       SELECT * FROM leanpostgres_test_script;"
+    let select ← prepare conn "SELECT count(*) FROM leanpostgres_test_script"
+    discard select.step
+    let count ← select.columnText 0
+    if count != "2" then
+      throw <| IO.userError s!"expected 2 rows after script, got {count}"
+    recordSuccess "multi-statement script executed, all statements applied"
+
+/-- A failure partway through an `execScript` call rolls the whole script back: the server runs
+it in one implicit transaction, so statements before the failing one leave no trace. -/
+def testExecScriptImplicitTransaction (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing execScript (implicit transaction) ===" <| guardTest do
+    try
+      let caught ← try
+          execScript conn
+            "CREATE TABLE leanpostgres_test_script_atomic (id integer);
+             INSERT INTO leanpostgres_test_script_atomic VALUES (not_a_column);"
+          pure (none : Option IO.Error)
+        catch e => pure (some e)
+      match caught with
+      | none => throw <| IO.userError "expected the script to fail, but it succeeded"
+      | some e =>
+        if Error.ofIOError? e |>.isNone then
+          throw <| IO.userError s!"expected a Postgres.Error, got: {e}"
+      let probe ← prepare conn
+        "SELECT count(*) FROM pg_tables WHERE tablename = 'leanpostgres_test_script_atomic'"
+      discard probe.step
+      let count ← probe.columnText 0
+      if count != "0" then
+        throw <| IO.userError "expected the CREATE TABLE before the failure to be rolled back"
+      recordSuccess "failing script left nothing applied"
+    finally
+      execScript conn "DROP TABLE IF EXISTS leanpostgres_test_script_atomic"
+
 /-- A syntactically invalid statement surfaces a `Postgres.Error` with SQLSTATE `42601`. -/
 def testMalformedStatementError (conn : Conn) : TestM Unit :=
   withHeader "=== Testing malformed statement error ===" <| withRollback conn <| guardTest do
@@ -1136,6 +1178,8 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testConnectSuccess
     testConnectFailure
     testStatementLifecycle conn
+    testExecScriptMultiStatement conn
+    testExecScriptImplicitTransaction conn
     testMalformedStatementError conn
     testCoreTypeRoundTrip conn
     testTupleRowIteration conn

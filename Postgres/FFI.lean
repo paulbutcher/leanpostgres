@@ -41,6 +41,14 @@ buffered result set, or throws a `Postgres.Error`-shaped error if `PQresultStatu
 @[extern "leanpostgres_exec_params"]
 private opaque execParams : @&Conn → String → Array (Option String) → IO Result
 
+/--
+Executes `sql` via `PQexec`'s simple query protocol: no parameters, and any number of
+`;`-separated statements. Discards any result rows; throws a `Postgres.Error`-shaped error if
+the final `PQresultStatus` isn't `PGRES_TUPLES_OK`/`PGRES_COMMAND_OK`.
+-/
+@[extern "leanpostgres_exec_script"]
+private opaque execScript : @&Conn → String → IO Unit
+
 /-- The number of rows in a buffered result set. -/
 @[extern "leanpostgres_ntuples"]
 private opaque ntuples : @&Result → Int32

@@ -253,6 +253,20 @@ def columnDatabaseName (stmt : Stmt) (column : Int32) : IO String := do
 
 end Stmt
 
+/--
+Executes {name}`sql` via the simple query protocol ({lit}`PQexec`). Unlike
+{name}`prepare`/{name}`Stmt.step` there are no parameters, but the text may contain any number
+of {lit}`;`-separated statements, making this suitable for running whole SQL scripts such as
+migration files. Any result rows are discarded.
+
+Outside an explicit transaction the server runs the entire script inside a single implicit one,
+so it applies all-or-nothing: a failure anywhere throws the usual
+{name}`Postgres.Error`-carrying {name (full := IO.Error)}`IO.Error` and leaves nothing applied.
+A script containing its own transaction-control statements manages its own boundaries instead.
+-/
+def execScript (db : Conn) (sql : String) : IO Unit :=
+  FFI.execScript db.connection sql
+
 /-- Transaction isolation levels. -/
 inductive IsolationLevel where
   /-- Allows reads of other transactions' concurrently committed changes; the Postgres default. -/

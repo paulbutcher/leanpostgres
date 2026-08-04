@@ -95,6 +95,27 @@ LEAN_EXPORT lean_object *leanpostgres_exec_params(b_lean_obj_arg conn_obj, lean_
     return lean_io_result_mk_ok(lean_alloc_external(g_pg_result_class, result));
 }
 
+// `conn` is borrowed; `sql` is consumed. Runs through `PQexec`'s simple query protocol, which
+// unlike `PQexecParams` accepts any number of `;`-separated statements. `PQexec` returns the
+// final statement's result, or the first error, so checking that one result covers the whole
+// script.
+LEAN_EXPORT lean_object *leanpostgres_exec_script(b_lean_obj_arg conn_obj, lean_object *sql) {
+    PGconn *conn = (PGconn *)lean_get_external_data(conn_obj);
+    PGresult *result = PQexec(conn, lean_string_cstr(sql));
+    lean_dec(sql);
+
+    ExecStatusType status = PQresultStatus(result);
+    if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
+        char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
+        lean_object *err = leanpostgres_mk_error(sqlstate, PQresultErrorMessage(result));
+        PQclear(result);
+        return err;
+    }
+
+    PQclear(result);
+    return lean_io_result_mk_ok(lean_box(0));
+}
+
 LEAN_EXPORT int32_t leanpostgres_ntuples(b_lean_obj_arg result) {
     return (int32_t)PQntuples((const PGresult *)lean_get_external_data(result));
 }
