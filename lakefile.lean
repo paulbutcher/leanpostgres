@@ -9,6 +9,7 @@ package leanpostgres where
   version := v!"0.1.0"
   license := "Apache-2.0"
   leanOptions := #[⟨`experimental.module, true⟩]
+  builtinLint := true
 
 require plausible from git
   "https://github.com/leanprover-community/plausible" @ "v4.32.0"
