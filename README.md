@@ -16,6 +16,9 @@ to make working with Postgres more straightforward:
  * Iterators over query result rows
  * Transactions with configurable isolation level, read-only, and
    deferrable options
+ * A fixed-size connection pool for sharing connections safely across
+   concurrent tasks, with both blocking and `Std.Async`-cooperative
+   checkout
  * A full type catalog covering Postgres's `numeric`, `uuid`,
    `date`/`time`/`timestamp[tz]`, `json`/`jsonb`, and one-dimensional
    array types, alongside the usual boolean/integer/float/text/bytea
