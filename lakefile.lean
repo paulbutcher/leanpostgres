@@ -121,8 +121,19 @@ lean_lib Postgres where
 -- into `testMain`'s exe root, so `TestMain.lean` can `import` it like any other module.
 lean_lib PostgresTest
 
+-- The test bodies themselves, split into one file per feature area under `tests/Tests/`. A
+-- `lean_exe`'s `srcDir` only locates its own root module, not a general import search path, so
+-- `TestMain.lean` can't just `import` sibling files there directly; they need to be a proper
+-- library target like this one for their `.olean`s to end up on the search path. Unlike
+-- `PostgresTest` above, there's no single root file importing every submodule (nothing needs to
+-- import the whole group at once), so `globs` selects every file under the directory directly
+-- rather than following imports from a root.
+lean_lib Tests where
+  srcDir := "tests"
+  globs := #[`Tests.+]
+
 @[test_driver]
 lean_exe testMain where
   root := `TestMain
   srcDir := "tests"
-  needs := #[PostgresTest]
+  needs := #[PostgresTest, Tests]
