@@ -6,13 +6,10 @@ import Lake
 open Lake DSL System
 
 package leanpostgres where
-  version := v!"0.3.0"
+  version := v!"0.4.0"
   license := "Apache-2.0"
   leanOptions := #[⟨`experimental.module, true⟩]
   builtinLint := true
-
-require plausible from git
-  "https://github.com/leanprover-community/plausible" @ "v4.32.0"
 
 /-- Runs `pkg-config --variable=<name> libpq`. `none` if pkg-config doesn't know libpq. -/
 unsafe def pkgConfigVarImpl (name : String) : Option String :=
@@ -116,24 +113,17 @@ lean_lib Postgres where
   moreLinkObjs := #[leanpostgres.o, libpq.so]
   dynlibs := #[leanpostgres.dynlib]
 
--- Test-support code (the `TestM` success/failure-recording framework), kept as its own library
--- target, under the package root like `Postgres` above, not under `tests/`, rather than folded
--- into `testMain`'s exe root, so `TestMain.lean` can `import` it like any other module.
-lean_lib PostgresTest
-
--- The test bodies themselves, split into one file per feature area under `tests/Tests/`. A
--- `lean_exe`'s `srcDir` only locates its own root module, not a general import search path, so
--- `TestMain.lean` can't just `import` sibling files there directly; they need to be a proper
--- library target like this one for their `.olean`s to end up on the search path. Unlike
--- `PostgresTest` above, there's no single root file importing every submodule (nothing needs to
--- import the whole group at once), so `globs` selects every file under the directory directly
--- rather than following imports from a root.
-lean_lib Tests where
-  srcDir := "tests"
-  globs := #[`Tests.+]
-
+-- The tests are a separate Lake package under `tests/`, requiring this one, so that packages
+-- depending on `leanpostgres` neither pick up a transitive dependency on test-only tools
+-- (`plausible`) nor have their own `Tests.*` module namespace claimed by this package's test
+-- library. This driver just delegates to that subpackage; the child inherits the environment,
+-- so the `PG*` variables the suite relies on reach it.
 @[test_driver]
-lean_exe testMain where
-  root := `TestMain
-  srcDir := "tests"
-  needs := #[PostgresTest, Tests]
+script tests (args) do
+  let pkg ← getRootPackage
+  let child ← IO.Process.spawn {
+    cmd := "lake"
+    args := #["test", "--"] ++ args.toArray
+    cwd := pkg.dir / "tests"
+  }
+  child.wait
