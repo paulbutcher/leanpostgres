@@ -52,6 +52,42 @@ def testColumnMetadata (conn : Conn) : TestM Unit :=
     recordSuccess s!"Column metadata OK (name/tableName/originName/databaseName={dbName}, incl. aliasing)"
 
 /--
+`columnCount` for an explicit select list, for `SELECT *` (where the count isn't knowable
+client-side), and for a command with no result columns at all.
+-/
+def testColumnCount (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing column count ===" <| withRollback conn <| guardTest do
+    let create ← prepare conn
+      "CREATE TABLE IF NOT EXISTS leanpostgres_test_column_count
+         (id integer, name text, email text, created_at date)"
+    create.exec
+
+    let explicit ← prepare conn "SELECT id, name FROM leanpostgres_test_column_count"
+    discard explicit.step
+    let explicitCount ← explicit.columnCount
+    if explicitCount != 2 then
+      throw <| IO.userError s!"unexpected columnCount for an explicit select list: {explicitCount}"
+
+    let star ← prepare conn "SELECT * FROM leanpostgres_test_column_count"
+    discard star.step
+    let starCount ← star.columnCount
+    if starCount != 4 then throw <| IO.userError s!"unexpected columnCount for SELECT *: {starCount}"
+
+    -- `step` returns `false` here (no rows), but the result, and so its metadata, is still there.
+    let insert ← prepare conn "INSERT INTO leanpostgres_test_column_count (id) VALUES ($1)"
+    insert.bind 1 (1 : Int32)
+    let stepped ← insert.step
+    if stepped then throw <| IO.userError "INSERT without RETURNING unexpectedly reported a row"
+    let insertCount ← insert.columnCount
+    if insertCount != 0 then
+      throw <| IO.userError s!"unexpected columnCount for an INSERT without RETURNING: {insertCount}"
+
+    let unstepped ← prepare conn "SELECT id FROM leanpostgres_test_column_count"
+    expectFailure "columnCount before step throws" unstepped.columnCount
+
+    recordSuccess "Column count OK (explicit select list/SELECT */no result columns)"
+
+/--
 `commandTag`/`commandTuples`/`isReadOnly` across `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`BEGIN`.
 
 Not wrapped in `withRollback`; it deliberately issues its own `BEGIN`/`ROLLBACK` (to check

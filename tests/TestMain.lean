@@ -56,6 +56,7 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testTimestamptzRoundTrip conn
     testArrayRoundTrip conn
     testColumnMetadata conn
+    testColumnCount conn
     testCommandMetadata conn
     testPoolConcurrencyBound
     testPoolReleaseOnThrow

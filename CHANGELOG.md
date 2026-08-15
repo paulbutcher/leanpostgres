@@ -2,7 +2,8 @@
 
 ## [0.4.0] - 2026-08-15
 
-Move tests into separate package
+- Move tests into separate package
+- Column counts
 
 ## [0.3.0] - 2026-08-10
 

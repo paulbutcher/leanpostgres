@@ -165,6 +165,14 @@ def columnName (stmt : Stmt) (column : Int32) : IO String := do
   FFI.fname (← stmt.currentResult) column
 
 /--
+Returns the number of columns in the result, the bound for the 0-indexed column arguments the
+other accessors take. Like them, this needs the statement to have already been executed at least
+once (see {name}`step`).
+-/
+def columnCount (stmt : Stmt) : IO Nat := do
+  return (FFI.nfields (← stmt.currentResult)).toNatClampNeg
+
+/--
 Returns the Postgres command tag of the executed statement (e.g. {lit}`SELECT`, {lit}`INSERT 0 3`,
 {lit}`DELETE 1`).
 -/
