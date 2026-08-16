@@ -13,6 +13,7 @@ import Tests.BlobDeriving
 import Tests.DomainTypes
 import Tests.Metadata
 import Tests.Pool
+import Tests.CodecProperties
 
 open Postgres
 open Postgres.Test
@@ -55,6 +56,7 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testTimestampRoundTrip conn
     testTimestamptzRoundTrip conn
     testArrayRoundTrip conn
+    testCodecProperties
     testColumnMetadata conn
     testColumnCount conn
     testCommandMetadata conn

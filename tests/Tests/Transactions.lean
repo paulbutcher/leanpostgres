@@ -36,8 +36,7 @@ def testTransactionOptionsCombinations (conn : Conn) : TestM Unit :=
 
 Not wrapped in `withRollback` for the same reason as `testTransactionOptionsCombinations`; this
 test's whole point is exercising real commits/rollbacks, which an enclosing wrapper transaction
-would interfere with. Cleans up its own table with `DELETE FROM` at the start instead, same as
-every M1–M8 test did before the rollback-per-test wrapper existed.
+would interfere with. Cleans up its own table with `DELETE FROM` at the start instead.
 -/
 def testTransactionCommitAndRollback (conn : Conn) : TestM Unit :=
   withHeader "=== Testing transaction commit/rollback semantics ===" <| guardTest do

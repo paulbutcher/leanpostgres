@@ -145,6 +145,9 @@ private def mkToBinaryAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM
     | 1 => mkToBinarySingleCtorBody indVal
     | _ => mkToBinaryMultiCtorBody indVal
 
+  -- A recursive type's recursive fields are serialized through the local instance below rather
+  -- than by a direct self-call, so neither termination checker can find a decreasing argument;
+  -- `partial` is the only way to emit a definition that elaborates for every such type.
   if indVal.isRec then
     `(@[no_expose] partial def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Serializer $targetType :=
         have : ToBinary $targetType := ⟨$(Lean.mkIdent auxFunName)⟩
@@ -185,7 +188,8 @@ def mkToBinaryInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
         if !(← hasNoFieldDependencies ctorName) then return false
       return true
   then
-    let ctx ← liftTermElabM <| mkContext ``ToBinary "toBinaryAux" declNames[0]!
+    let some firstDecl := declNames[0]? | return false
+    let ctx ← liftTermElabM <| mkContext ``ToBinary "toBinaryAux" firstDecl
     let auxFunCmd ← liftTermElabM <| mkToBinaryAuxFunction ctx 0
     elabCommand auxFunCmd
     let instanceCmds ← liftTermElabM <| mkToBinaryInstanceCmds ctx declNames
@@ -276,6 +280,7 @@ private def mkFromBinaryAuxFunction (ctx : Deriving.Context) (i : Nat) : TermEla
     | 1 => mkFromBinarySingleCtorBody indVal
     | _ => mkFromBinaryMultiCtorBody indVal
 
+  -- `partial` for the same reason as in `mkToBinaryAuxFunction`.
   if indVal.isRec then
     `(@[no_expose] partial def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Deserializer $targetType :=
         have : FromBinary $targetType := ⟨$(Lean.mkIdent auxFunName)⟩
@@ -316,7 +321,8 @@ def mkFromBinaryInstanceHandler (declNames : Array Name) : CommandElabM Bool := 
         if !(← hasNoFieldDependencies ctorName) then return false
       return true
   then
-    let ctx ← liftTermElabM <| mkContext ``FromBinary "fromBinaryAux" declNames[0]!
+    let some firstDecl := declNames[0]? | return false
+    let ctx ← liftTermElabM <| mkContext ``FromBinary "fromBinaryAux" firstDecl
     let auxFunCmd ← liftTermElabM <| mkFromBinaryAuxFunction ctx 0
     elabCommand auxFunCmd
     let instanceCmds ← liftTermElabM <| mkFromBinaryInstanceCmds ctx declNames

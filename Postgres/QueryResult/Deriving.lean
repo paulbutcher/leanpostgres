@@ -184,7 +184,8 @@ def mkRowInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
     -- Check that no field's type depends on a previous field
     liftTermElabM <| hasNoFieldDependencies indVal.ctors[0]!
   then
-    let ctx ← liftTermElabM <| mkContext ``Row "row" declNames[0]!
+    let some firstDecl := declNames[0]? | return false
+    let ctx ← liftTermElabM <| mkContext ``Row "row" firstDecl
     let auxFunCmd ← liftTermElabM <| mkRowAuxFunction ctx 0
     elabCommand auxFunCmd
     let instanceCmds ← liftTermElabM <| mkRowInstanceCmds ctx declNames
@@ -232,7 +233,8 @@ def mkResultColumnInstanceHandler (declNames : Array Name) : CommandElabM Bool :
       let numFields ← liftTermElabM <| getCtorFieldCount indVal.ctors[0]!
       return numFields == 1
   if canHandle then
-    let ctx ← liftTermElabM <| mkContext ``ResultColumn "resultColumn" declNames[0]!
+    let some firstDecl := declNames[0]? | return false
+    let ctx ← liftTermElabM <| mkContext ``ResultColumn "resultColumn" firstDecl
     let auxFunCmd ← liftTermElabM <| mkResultColumnAuxFunction ctx 0
     elabCommand auxFunCmd
     let instanceCmds ← liftTermElabM <| Elab.Deriving.mkInstanceCmds ctx ``ResultColumn declNames
@@ -293,7 +295,8 @@ def mkQueryParamInstanceHandler (declNames : Array Name) : CommandElabM Bool := 
     let fieldInfo ← liftTermElabM <| analyzeCtorFields indVal.ctors[0]!
     return fieldInfo.dataFieldIndices.size == 1
   then
-    let ctx ← liftTermElabM <| mkContext ``QueryParam "queryParam" declNames[0]!
+    let some firstDecl := declNames[0]? | return false
+    let ctx ← liftTermElabM <| mkContext ``QueryParam "queryParam" firstDecl
     let auxFunCmd ← liftTermElabM <| mkQueryParamAuxFunction ctx 0
     elabCommand auxFunCmd
     let instanceCmds ← liftTermElabM <| Elab.Deriving.mkInstanceCmds ctx ``QueryParam declNames

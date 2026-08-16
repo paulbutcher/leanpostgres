@@ -12,10 +12,10 @@ open Postgres.Test
 /--
 Statement lifecycle: parameterized `INSERT`/`SELECT` (incl. bound `NULL` and multi-row iteration),
 `step` returning `false` immediately for a query matching no rows, and `UPDATE`/`DELETE` executing
-fine via `exec` despite never having rows to step over. Merged into one test (rather than three, as
-in earlier milestones) because the pieces build on each other's inserted rows within a single
-transaction; after M9's move to rollback-per-test isolation, splitting them apart would leave each
-piece unable to see the previous one's writes.
+fine via `exec` despite never having rows to step over. These are one test rather than three
+because the pieces build on each other's inserted rows within a single transaction, and each test
+runs inside its own `withRollback`, so splitting them apart would leave each piece unable to see
+the previous one's writes.
 -/
 def testStatementLifecycle (conn : Conn) : TestM Unit :=
   withHeader "=== Testing statement lifecycle (bind/step/exec) ===" <| withRollback conn <| guardTest do

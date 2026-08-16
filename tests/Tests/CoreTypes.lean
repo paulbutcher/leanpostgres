@@ -11,7 +11,7 @@ open Postgres.Interpolation
 open Postgres.Test
 
 /--
-Round-trips every M3 core type through `QueryParam`/`ResultColumn`, including bound and read
+Round-trips every scalar core type through `QueryParam`/`ResultColumn`, including bound and read
 `NULL` (`Option α`).
 -/
 def testCoreTypeRoundTrip (conn : Conn) : TestM Unit :=

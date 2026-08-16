@@ -364,6 +364,10 @@ public instance : ToBinary Lean.JsonNumber := .via fun | { mantissa, exponent } 
 
 public instance : FromBinary Lean.JsonNumber := .via fun (mantissa, exponent) => { mantissa, exponent }
 
+-- `partial` is unavoidable here: `Json`'s recursive occurrences are nested inside `Array` and
+-- `RBNode`, so `go` reaches them only through those types' own serializers, via the local instance
+-- below. Neither the structural nor the well-founded checker can see a decreasing argument through
+-- that indirection.
 public partial instance : ToBinary Lean.Json where
   serializer := go
 where
@@ -380,6 +384,8 @@ where
       have : ToBinary Lean.Json := ⟨go⟩
       b.push 6 |> ToBinary.serializer xs.toArray
 
+-- `partial` for the same reason as `ToBinary Lean.Json` above; here the cursor advancing on every
+-- read is what actually guarantees termination, which is not visible to either checker.
 public partial instance : FromBinary Lean.Json where
   deserializer := go
 where

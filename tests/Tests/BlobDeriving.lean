@@ -137,6 +137,14 @@ Property-based counterpart to `testBlobDeriving`: runs `Testable.checkIO` over e
 instead of the hand-picked examples above, sampling a wide, automatically-generated value space
 (large `Nat`s, empty/long/Unicode strings, deeply nested `Tree`s) with automatic shrinking of any
 counter-example found.
+
+Properties rather than theorems, despite this being a wire format, for two reasons. The
+serializers under test are generated per type by a deriving handler, so there is no single fixed
+function to state a theorem about; the claim would have to be re-proved for each fixture, and for
+recursive types like `Tree` the generated definition is `partial` and so carries no equation
+lemmas to reason from. Underneath that, the round trip bottoms out in `ByteArray` primitives the
+kernel will not reduce, which blocks `decide` for the same reason described in
+`Tests.CodecProperties`.
 -/
 def testBlobDerivingProperties : TestM Unit :=
   withHeader "=== Testing Blob ToBinary/FromBinary deriving (property-based) ===" <| guardTest do
