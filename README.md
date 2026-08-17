@@ -16,9 +16,10 @@ to make working with Postgres more straightforward:
  * Iterators over query result rows
  * Transactions with configurable isolation level, read-only, and
    deferrable options
- * A fixed-size connection pool for sharing connections safely across
-   concurrent tasks, with both blocking and `Std.Async`-cooperative
-   checkout
+ * A fixed-capacity connection pool for sharing connections safely
+   across concurrent tasks, with both blocking and
+   `Std.Async`-cooperative checkout, which replaces connections that
+   have stopped working
  * A full type catalog covering Postgres's `numeric`, `uuid`,
    `date`/`time`/`timestamp[tz]`, `json`/`jsonb`, and one-dimensional
    array types, alongside the usual boolean/integer/float/text/bytea
@@ -44,6 +45,22 @@ higher-level conveniences. It includes type classes for binding and
 reading values (with the full type catalog above), a row reader monad
 for extracting query results, iterator support for working with result
 sets, and SQL interpolation syntax for embedding values in queries.
+
+## Connections that stop working
+
+Pooled connections can stop working while idle: a failover, a restart, a
+network that drops idle flows. The pool replaces them as they're handed
+out and never re-runs a statement a caller already issued.
+
+Set these in your connection string. Without them the library cannot
+bound how long a broken connection takes to notice:
+
+ * `tcp_user_timeout` and `keepalives_*`, for a flow the network drops
+   silently
+ * `connect_timeout`, for a database that is unreachable
+
+`Pool.create` takes `validateAfterIdle`, how long a connection may sit
+idle before it is checked. 30 seconds by default; `none` to disable.
 
 ## Postgres Integration
 

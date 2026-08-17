@@ -400,6 +400,30 @@ clocks, and a round-trip check for connections idle beyond it. Discharges R11, a
 the extent the consumer has configured R5. Demonstrations 4, 5 and 10 attach here, as does the
 consumer obligation R5 carries, which must be written down rather than implied.
 
+*Done.* `PoolOptions.validateAfterIdle` is a `Std.Time.Duration`, defaulting to 30 seconds, with
+`none` meaning never. Idle time is the greater of the monotonic and wall-clock elapsed times, as
+decided. A connection past the threshold is sent a statement, and anything other than a plain
+answer replaces it; that also disposes of a connection left in an aborted transaction, which is
+live and reachable and would fail every statement until someone rolled it back, and which nothing
+before this phase would have caught.
+
+Demonstration 10 turned out to be testable after all, rather than needing server-side statistics
+as feared: asking the server what it last saw on a backend establishes what the pool sent without
+sending anything to find out. It and the threshold check form a matched pair, each confirmed to
+fail if the other's behaviour is substituted, so neither can pass vacuously.
+
+Demonstration 4 is covered by the borrow against an unreachable database in the creation test. The
+bound on it is `connect_timeout`, which is the consumer's to set.
+
+Demonstration 5, mode B, is **not exercised**, and cannot be in this suite: provoking a silently
+dropped flow needs a middlebox that discards packets without resetting, which a test running
+against a real Postgres over a loopback or bridge has no way to arrange. What stands in its place
+is the check this phase adds plus a documented obligation. The library cannot bound how long that
+check takes to fail; `tcp_user_timeout` and `keepalives_*` in the caller's own connection string
+are what bound it. That obligation is now stated in the README under its own heading, in
+`PoolOptions.validateAfterIdle`, and on `Pool.withConn`, rather than left to be inferred from mode
+A working.
+
 **Phase 6: observability and the options surface.** The counters R10 requires, and the options
 carrying the creation choice from phase 3 and the interval from phase 5, defaulted so that existing
 call sites are unaffected. Discharges R10, confirms R8, and discharges demonstration 7.

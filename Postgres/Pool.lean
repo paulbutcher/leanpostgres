@@ -7,6 +7,7 @@ public import Postgres.LowLevel
 public import Std.Sync.Channel
 public import Std.Sync.Mutex
 public import Std.Async
+public import Std.Time
 
 set_option doc.verso true
 set_option linter.missingDocs true
@@ -14,6 +15,33 @@ set_option linter.missingDocs true
 namespace Postgres
 
 public section
+
+/-- A connection nobody is using, alongside readings of both clocks from when it was returned. -/
+private structure Idle where
+  conn : Conn
+  mono : Nat
+  wall : Int
+
+/-- Both clocks, read together. -/
+private def readClocks : IO (Nat × Int) := do
+  let mono ← IO.monoNanosNow
+  let wall ← Std.Time.Timestamp.now
+  return (mono, wall.toNanosecondsSinceUnixEpoch.toInt)
+
+/--
+How long a connection has been idle, in nanoseconds, taken as the greater of what the two clocks
+report.
+
+Neither clock can be trusted alone. A monotonic clock doesn't advance while the process is
+suspended, so a connection idle across a frozen execution environment looks untouched by it, which
+is precisely the case worth catching. A wall clock can be stepped backwards by an adjustment. The
+two errors aren't equally bad either: over-reporting costs one unnecessary round trip, while
+under-reporting hands a caller a connection that doesn't work, so the larger reading is the safe
+one.
+-/
+private def Idle.elapsedNanos (entry : Idle) : IO Nat := do
+  let (mono, wall) ← readClocks
+  return max (mono - entry.mono) (wall - entry.wall).toNat
 
 /--
 A fixed-capacity pool of connections, to share safely across concurrent tasks.
@@ -51,7 +79,8 @@ structure Pool where
   /-- The number of connections the pool will hold at once. -/
   size : Nat
   private permits : Std.CloseableChannel Unit
-  private idle : Std.Mutex (List Conn)
+  private idle : Std.Mutex (List Idle)
+  private idleThresholdNanos : Option Nat
 
 /-- Options for {lit}`Pool.create`. -/
 structure PoolOptions where
@@ -66,7 +95,24 @@ structure PoolOptions where
   learn about an outage.
   -/
   requireConnection : Bool := true
-deriving Repr, BEq, Hashable, Inhabited
+  /--
+  How long a connection may sit idle before the pool checks it with a statement rather than only
+  locally, or {lean}`none` never to do so.
+
+  Checking a borrowed connection locally is free and catches one the server closed, but a
+  connection whose network path dropped the flow silently looks exactly like a working one until
+  something is actually sent. Sending something is the only way to tell, and it costs a round trip,
+  so it's worth doing on a connection that has been sitting long enough to have gone stale and not
+  on one returned moments ago. A pool in steady use therefore pays nothing for this.
+
+  How long that round trip takes to fail when the connection really is gone isn't bounded by
+  anything here: without {lit}`tcp_user_timeout` or the {lit}`keepalives_*` parameters set in
+  {name (full := Pool.conninfo)}`conninfo`, the operating system will retransmit for many minutes
+  before giving up. Setting them is what makes this check finish in time to be useful, and only the
+  application knows what value suits the network between it and its database.
+  -/
+  validateAfterIdle : Option Std.Time.Duration := some (Std.Time.Duration.ofSeconds 30)
+deriving Repr, Inhabited
 
 namespace Pool
 
@@ -81,12 +127,17 @@ time via {lit}`Pool.withConn`/{lit}`Pool.withConnAsync`.
 def create (conninfo : String) (size : Nat) (opts : PoolOptions := {}) : IO Pool := do
   if size = 0 then
     throw <| IO.userError "pool size must be greater than 0"
-  let initial ← if opts.requireConnection then (fun conn => [conn]) <$> «open» conninfo else pure []
+  let initial ← if opts.requireConnection then
+      let conn ← «open» conninfo
+      let (mono, wall) ← readClocks
+      pure [({ conn, mono, wall } : Idle)]
+    else pure []
   let permits ← Std.CloseableChannel.new (capacity := some size)
   for _ in [:size] do
     permits.sync.send ()
   let idle ← Std.Mutex.new initial
-  return { conninfo, size, permits, idle }
+  let idleThresholdNanos := opts.validateAfterIdle.map (·.toNanoseconds.toInt.toNat)
+  return { conninfo, size, permits, idle, idleThresholdNanos }
 
 /--
 Takes the most recently returned idle connection, or {lean}`none` if there are none.
@@ -94,14 +145,15 @@ Takes the most recently returned idle connection, or {lean}`none` if there are n
 The lock is held only for the length of a list operation, never across anything that waits, so
 taking it here can't stall a fiber that {lit}`Pool.withConnAsync` is multiplexing.
 -/
-private def takeIdle (pool : Pool) : IO (Option Conn) :=
+private def takeIdle (pool : Pool) : IO (Option Idle) :=
   pool.idle.atomically do
     match ← get with
     | [] => return none
-    | conn :: rest => set rest; return some conn
+    | entry :: rest => set rest; return some entry
 
-private def putIdle (pool : Pool) (conn : Conn) : IO Unit :=
-  pool.idle.atomically (modify (conn :: ·))
+private def putIdle (pool : Pool) (conn : Conn) : IO Unit := do
+  let (mono, wall) ← readClocks
+  pool.idle.atomically (modify ({ conn, mono, wall } :: ·))
 
 /--
 Opens a connection for a permit the caller already holds.
@@ -120,6 +172,23 @@ private def fill (pool : Pool) : IO Conn := do
     throw e
 
 /--
+Whether an idle connection has been sitting long enough to be worth sending something to, and has
+then failed to answer.
+
+A connection returned recently is taken on trust, which is what keeps a pool in steady use from
+paying a round trip per borrow. Anything the server rejects counts as a failure to answer, which
+also disposes of a connection left in an aborted transaction: it is live, it is reachable, and
+every statement on it would fail until someone rolled it back.
+-/
+private def staleAfterIdle (pool : Pool) (entry : Idle) : IO Bool := do
+  let some threshold := pool.idleThresholdNanos | return false
+  if (← entry.elapsedNanos) < threshold then return false
+  try
+    (← prepare entry.conn "SELECT 1").exec
+    return false
+  catch _ => return true
+
+/--
 Turns a permit the caller already holds into a connection that was usable at the moment it was
 handed over.
 
@@ -131,7 +200,11 @@ runs is ever repeated, and no handle the caller derives can outlive the connecti
 private def connectionFor (pool : Pool) : IO Conn := do
   match ← pool.takeIdle with
   | none => pool.fill
-  | some conn => if ← conn.isLive then return conn else pool.fill
+  | some entry =>
+    if ← entry.conn.isLive then
+      if ← pool.staleAfterIdle entry then pool.fill else return entry.conn
+    else
+      pool.fill
 
 private def acquire (pool : Pool) : IO Conn := do
   match ← pool.permits.sync.recv with

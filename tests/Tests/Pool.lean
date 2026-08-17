@@ -257,6 +257,47 @@ def testPoolKeepsConnectionAfterCallerError : TestM Unit :=
     recordSuccess "connection kept after an exception unrelated to it"
 
 /--
+A borrow from a pool in steady use sends nothing to the server. Checking a borrowed connection is
+supposed to be free, and an implementation that checked by sending something would meet every other
+requirement while adding a round trip to every request of an application whose database is next
+door.
+
+What the server last saw on the backend answers this without sending anything to find out, so the
+second borrow does no work of its own: anything the server has seen since must have come from the
+pool. The observation happens inside that borrow, since a pool with no live reference left is
+finalized, taking its connections with it.
+-/
+def testPoolHotBorrowSendsNothing : TestM Unit :=
+  withHeader "=== Testing a borrow from a pool in steady use sends nothing ===" <| guardTest do
+    let observer ← «open» ""
+    let pool ← Pool.create "" 1 { validateAfterIdle := none }
+    let pid ← pool.withConn backendPid
+    pool.withConn fun _ => do
+      let seen ← lastQuery observer pid
+      unless seen == "SELECT pg_backend_pid()" do
+        throw <| IO.userError
+          s!"expected the server to have seen nothing since the previous borrow, it last saw '{seen}'"
+    recordSuccess "borrow from a pool in steady use sent nothing to the server"
+
+/--
+A connection idle beyond the configured threshold is checked by sending something, which is the
+only way to tell a working connection from one whose flow has been dropped silently.
+
+The threshold is zero here so that the check always applies; the point being tested is that the
+threshold is consulted at all, not how long it is.
+-/
+def testPoolChecksConnectionPastIdleThreshold : TestM Unit :=
+  withHeader "=== Testing a pool checks a connection past its idle threshold ===" <| guardTest do
+    let observer ← «open» ""
+    let pool ← Pool.create "" 1 { validateAfterIdle := some (Std.Time.Duration.ofSeconds 0) }
+    let pid ← pool.withConn backendPid
+    let seen ← pool.withConn fun _ => lastQuery observer pid
+    if seen == "SELECT pg_backend_pid()" then
+      throw <| IO.userError
+        "expected the pool to have sent something on a connection past its idle threshold"
+    recordSuccess s!"pool checked a connection past its idle threshold (server last saw '{seen}')"
+
+/--
 Capacity survives failed opens. A pool that gives up a unit of capacity whenever an open fails
 empties during an outage and then blocks every later borrow indefinitely, a failure that outlives
 the outage that caused it and looks nothing like it.

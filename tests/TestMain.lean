@@ -74,6 +74,8 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testPoolReplacesClosedConnection
     testPoolKeepsConnectionAfterServerError
     testPoolKeepsConnectionAfterCallerError
+    testPoolHotBorrowSendsNothing
+    testPoolChecksConnectionPastIdleThreshold
   ).run config).run headerRef).run { successes := 0, failures := 0 }
 
   report ""

@@ -76,6 +76,17 @@ def backendPid (conn : Conn) : IO String := do
   let _ ← stmt.step
   stmt.columnText 0
 
+/--
+The last statement the server saw on `pid`'s backend, which is how a test can tell whether anything
+was sent on a connection without sending anything on it to find out.
+-/
+def lastQuery (observer : Conn) (pid : String) : IO String := do
+  let stmt ← prepare observer "SELECT query FROM pg_stat_activity WHERE pid = $1::int"
+  stmt.bindText 1 pid
+  unless ← stmt.step do
+    throw <| IO.userError s!"no backend {pid} in pg_stat_activity"
+  stmt.columnText 0
+
 /-- Terminates `pid`'s backend from `observer`, returning once the server reports it gone. -/
 def terminateBackend (observer : Conn) (pid : String) : IO Unit := do
   let kill ← prepare observer "SELECT pg_terminate_backend($1::int)"
