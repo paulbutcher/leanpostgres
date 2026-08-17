@@ -47,7 +47,8 @@ These are stated so they need not be rediscovered. They are not instructions.
 - `Postgres/Pool.lean` already documents that libpq connections are unsafe for concurrent use,
   which is why the pool exists at all.
 - libpq's default notice handler prints server notices, warnings, and asynchronous FATAL messages
-  to stderr. Nothing in the library overrides it, so these already reach stderr uncontrolled.
+  to stderr. The library leaves it in place except while checking whether a connection is still
+  live, so ordinary notices still reach stderr uncontrolled.
 
 ## Failure modes that must both be covered
 
@@ -322,6 +323,19 @@ would have left a caller holding a connection with an open transaction and no in
 **Phase 2: connection liveness in the FFI.** Expose enough of libpq to answer whether a connection
 is still usable without issuing a statement against it. Enables R1 and R13 but discharges neither
 on its own.
+
+*Done.* `Conn.isLive` answers whether a connection is still usable without sending anything to the
+server, at roughly 0.2 microseconds and no round trip when the connection is healthy. The drain
+loop sits in C, as phase 0 concluded, so nothing in Lean needs a termination argument for it.
+Notices are suppressed for the duration of the drain and restored afterwards rather than
+permanently: ordinary `NOTICE` output still reaches stderr exactly as before, while a check that
+happens to consume a dying connection's parting message no longer prints it on the application's
+behalf.
+
+That one check suffices is pinned by a test of its own, confirmed to fail against an implementation
+that reads once. It earns its place: the test that merely retries until the connection is reported
+closed passes either way, so without it a regression to a single read would leave every borrow
+handing out a dead connection with the suite still green.
 
 **Phase 3: pool capacity and deferred filling.** Separate pool capacity from the number of
 connections currently established, so that a unit of capacity can be empty rather than always

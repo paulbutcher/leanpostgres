@@ -28,6 +28,9 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testFFIInitialized
     testConnectSuccess
     testConnectFailure
+    testConnIsLiveOnHealthyConnection
+    testConnIsLiveDetectsTerminatedBackend
+    testConnIsLiveNoticesCloseInOneCall
     testStatementLifecycle conn
     testExecScriptMultiStatement conn
     testExecScriptImplicitTransaction conn

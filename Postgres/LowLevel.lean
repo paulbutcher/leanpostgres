@@ -42,6 +42,22 @@ def «open» (conninfo : String) : IO Conn := do
   return { conninfo, connection }
 
 /--
+Whether {name}`conn` is still usable, answered without sending anything to the server.
+
+A connection the server has closed is found here: its final message and the end of the stream are
+already waiting on the socket, and reading them is what reveals the close. A healthy connection has
+nothing waiting, so this costs a single non-blocking check of the socket and no round trip, which
+makes it cheap enough to run before every use.
+
+A connection whose network path has silently dropped the flow, delivering no close at all, cannot
+be found this way, and {lean}`true` here says only that nothing has arrived to say otherwise. Such
+a connection is indistinguishable from a healthy one until something is actually sent, so bounding
+the cost of meeting one needs a timeout on the connection itself, via libpq's
+{lit}`tcp_user_timeout` and {lit}`keepalives_*` connection parameters.
+-/
+def Conn.isLive (conn : Conn) : IO Bool := FFI.isLive conn.connection
+
+/--
 A prepared statement: SQL text plus a client-side buffer of parameters to bind before executing.
 
 There is no server-side prepared-statement object or name; {lit}`prepare` never round-trips

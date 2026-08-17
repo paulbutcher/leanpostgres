@@ -4,6 +4,8 @@
  */
 #include <lean/lean.h>
 #include <libpq-fe.h>
+#include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -58,6 +60,56 @@ LEAN_EXPORT lean_object *leanpostgres_open(lean_object *conninfo) {
         return err;
     }
     return lean_io_result_mk_ok(lean_alloc_external(g_pg_conn_class, conn));
+}
+
+static void pg_discard_notice(void *arg, const char *message) {
+    (void)arg;
+    (void)message;
+}
+
+// Answers whether `conn` is still usable, without sending anything to the server.
+//
+// A healthy idle connection has nothing waiting on its socket, so this costs one non-blocking
+// poll. A connection whose backend has gone has bytes waiting, and reading them is what reveals
+// it: libpq reads the server's FATAL message first and reports success, and only the read after
+// that reports end of file. A single `PQconsumeInput` therefore always concludes the connection is
+// healthy, which is why this drains in a loop.
+//
+// Notices are discarded while draining, because the FATAL consumed here would otherwise be printed
+// to the process's stderr by libpq's default handler, letting a silent check write to the
+// application's output.
+//
+// Only a connection the far end has closed can be found this way. A flow silently dropped in the
+// network leaves the socket indistinguishable from an idle healthy one, and nothing local can tell
+// them apart.
+LEAN_EXPORT lean_object *leanpostgres_is_live(b_lean_obj_arg conn_obj) {
+    PGconn *conn = (PGconn *)lean_get_external_data(conn_obj);
+    if (PQstatus(conn) != CONNECTION_OK) return lean_io_result_mk_ok(lean_box(0));
+
+    int fd = PQsocket(conn);
+    if (fd < 0) return lean_io_result_mk_ok(lean_box(0));
+
+    PQnoticeProcessor previous = PQsetNoticeProcessor(conn, pg_discard_notice, NULL);
+    int live = 1;
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int ready = poll(&pfd, 1, 0);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            live = 0;
+            break;
+        }
+        if (ready == 0) break;
+        if (PQconsumeInput(conn) == 0 || PQstatus(conn) != CONNECTION_OK) {
+            live = 0;
+            break;
+        }
+    }
+    PQsetNoticeProcessor(conn, previous, NULL);
+    return lean_io_result_mk_ok(lean_box(live));
 }
 
 // `conn` is borrowed; `sql` and `params` are consumed. Each element of `params` is an

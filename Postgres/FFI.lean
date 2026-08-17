@@ -33,6 +33,14 @@ public instance : Repr Result where
 opaque «open» : String → IO Conn
 
 /--
+Whether the connection is still usable, answered without sending anything to the server. Consumes
+whatever libpq has waiting on the socket, which is how a connection the server has closed is
+discovered.
+-/
+@[extern "leanpostgres_is_live"]
+private opaque isLive : @&Conn → IO Bool
+
+/--
 Executes `sql` with the given parameters via `PQexecParams` (text format throughout; every
 element of `params` is either `none` for SQL `NULL` or `some` already-encoded text). Returns the
 buffered result set, or throws a `Postgres.Error`-shaped error if `PQresultStatus` isn't
