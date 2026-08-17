@@ -78,6 +78,8 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testPoolChecksConnectionPastIdleThreshold
     testPoolStatisticsCountReplacement
     testPoolStatisticsCountOpenFailure
+    testPoolNewSessionCarriesTemporaryState
+    testPoolNewSessionRepeatsAfterFailedBorrow
   ).run config).run headerRef).run { successes := 0, failures := 0 }
 
   report ""

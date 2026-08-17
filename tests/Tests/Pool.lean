@@ -355,6 +355,75 @@ def testPoolStatisticsCountOpenFailure : TestM Unit :=
     recordSuccess "pool statistics counted a failed open without counting it as a success"
 
 /--
+Session-scoped state can be established once and relied on afterwards, and is rebuilt when the
+connection carrying it is replaced.
+
+A temporary table is the honest subject: it really does vanish with the session, so a borrow that
+was wrongly told the session was already set up fails on the missing table rather than passing
+quietly.
+-/
+def testPoolNewSessionCarriesTemporaryState : TestM Unit :=
+  withHeader "=== Testing Borrowed.newSession supports session-scoped state ===" <| guardTest do
+    let pool ← Pool.create "" 1
+    let observer ← «open» ""
+    let setups ← IO.mkRef 0
+
+    let useMarker : IO String := pool.withBorrowed fun b => do
+      if b.newSession then
+        setups.modify (· + 1)
+        (← prepare b.conn "CREATE TEMP TABLE leanpostgres_marker (v text)").exec
+        (← prepare b.conn "INSERT INTO leanpostgres_marker VALUES ('present')").exec
+      let stmt ← prepare b.conn "SELECT v FROM leanpostgres_marker"
+      unless ← stmt.step do
+        throw <| IO.userError "the temporary table was missing from a session reported as set up"
+      stmt.columnText 0
+
+    if (← useMarker) != "present" then
+      throw <| IO.userError "expected the row established on a new session"
+    if (← setups.get) != 1 then
+      throw <| IO.userError s!"expected one setup, ran {← setups.get}"
+
+    if (← useMarker) != "present" then
+      throw <| IO.userError "expected the established session's state to still be there"
+    if (← setups.get) != 1 then
+      throw <| IO.userError "an already established session was reported as new"
+
+    let pooledPid ← pool.withBorrowed (fun b => backendPid b.conn)
+    let canary ← «open» ""
+    let canaryPid ← backendPid canary
+    terminateBackend observer pooledPid
+    terminateBackend observer canaryPid
+    unless ← waitUntilNotLive canary 200 do
+      throw <| IO.userError "the canary connection was never reported as closed"
+
+    if (← useMarker) != "present" then
+      throw <| IO.userError "expected the state to be rebuilt on the replacement connection"
+    if (← setups.get) != 2 then
+      throw <| IO.userError "a replaced connection was not reported as a new session"
+    recordSuccess "session state was established once, reused, and rebuilt after a replacement"
+
+/--
+A borrow whose action failed leaves the session reported as new again. The action may have failed
+part-way through establishing it, and there is no way to tell from outside, so the safe answer is
+the one that redoes work rather than the one that relies on work that may never have happened.
+-/
+def testPoolNewSessionRepeatsAfterFailedBorrow : TestM Unit :=
+  withHeader "=== Testing a failed borrow leaves the session reported as new ===" <| guardTest do
+    let pool ← Pool.create "" 1
+    let seen ← IO.mkRef ([] : List Bool)
+    try
+      pool.withBorrowed fun b => do
+        seen.modify (b.newSession :: ·)
+        throw (IO.userError "setup failed part-way")
+    catch _ => pure ()
+    pool.withBorrowed fun b => seen.modify (b.newSession :: ·)
+    match (← seen.get).reverse with
+    | [true, true] =>
+      recordSuccess "a session whose setup failed was reported as new again"
+    | other =>
+      throw <| IO.userError s!"expected both borrows to report a new session, got {other}"
+
+/--
 Capacity survives failed opens. A pool that gives up a unit of capacity whenever an open fails
 empties during an outage and then blocks every later borrow indefinitely, a failure that outlives
 the outage that caused it and looks nothing like it.

@@ -62,6 +62,16 @@ bound how long a broken connection takes to notice:
 `Pool.create` takes `validateAfterIdle`, how long a connection may sit
 idle before it is checked. 30 seconds by default; `none` to disable.
 
+Session state does not survive a borrow. Put server settings in the
+connection string (`options='-c search_path=...'`), where each
+connection picks them up for free. Take advisory locks inside the
+borrow that uses them. `LISTEN` needs its own connection, outside the
+pool.
+
+For state that has to be built on the connection itself, such as
+temporary tables, borrow with `Pool.withBorrowed`, which tells you
+whether the session has been set up yet.
+
 ## Postgres Integration
 
 `libpq` is a build-time and runtime prerequisite. You'll need it 

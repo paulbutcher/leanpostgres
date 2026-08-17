@@ -446,3 +446,43 @@ requirements document.
 **Phase 7 (should): session initialisation.** A way for an application to prepare a newly opened
 connection, so that a replacement is equivalent to its predecessor rather than merely functional.
 Discharges R15. Independent of phases 4 to 6 and can be deferred without affecting them.
+
+*Done.* R15's `must` is met: `Pool.withConn` and the README both now state that
+nothing set on a session survives past the end of an action, name what that covers, and say where
+such state has to go instead. That half is the one that stops the bug being written, since setting
+something in one borrow and depending on it in a later one appears to work until a connection is
+replaced or a borrow lands elsewhere.
+
+The documentation is specific about which answer applies to which kind of state, because they
+differ and one instruction covering all of them is wrong for most. Server settings go in
+`conninfo`, where the server applies them to every connection including replacements, at no cost.
+Temporary tables and advisory locks go inside the action, and a session-scoped advisory lock held
+across borrows is broken whether or not anything is ever replaced. `LISTEN` cannot be pooled at
+all, since notifications reach only the connection that registered them and only while it is
+borrowed, so it needs a connection kept outside the pool.
+
+A `Conn` still carries no identity an application can compare against one it held before, which is
+why the signal has to come from the pool: nothing an application can do from outside would tell it
+whether the connection it has is one it has already prepared.
+
+R15's `should` is met, by telling the application rather than by acting for it. `Pool.withBorrowed`
+hands over a `Borrowed`, carrying the connection and whether the session has been set up yet, so an
+application establishes its own state in its own code, once per connection instead of once per
+borrow.
+
+A hook that ran the application's setup for it was considered first and rejected in favour of this.
+Every hazard the hook carried came from the pool running the application's code: a hook that
+borrows from the pool it is initialising deadlocks; a hook runs at times the application does not
+choose; a throwing hook is indistinguishable from a database outage in the counters. Reporting
+carries none of these, because the setup is then ordinary code in the place the application wrote
+it. It is also more expressive than either hook shape considered, since it is not a callback at
+all.
+
+Two details are load-bearing, and both were confirmed by removing them and watching a test fail.
+A connection replaced part-way through a pool's life reports a new session, without which an
+application relying on session state meets `42P01 relation does not exist` after a failover. And
+the flag clears when an action completes rather than when the connection is handed over, because an
+action that threw may have thrown during its own setup, and there is no way to tell from outside;
+redoing work that may already have been done is the recoverable error, relying on work that was
+never done is not. The cost is that setup must be safe to repeat, which is stated where the
+application will read it.

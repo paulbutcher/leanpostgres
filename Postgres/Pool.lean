@@ -43,6 +43,7 @@ private structure Idle where
   conn : Conn
   mono : Nat
   wall : Int
+  newSession : Bool
 
 /-- Both clocks, read together. -/
 private def readClocks : IO (Nat × Int) := do
@@ -105,6 +106,24 @@ structure Pool where
   private idleThresholdNanos : Option Nat
   private stats : Std.Mutex PoolStats
 
+/--
+A connection borrowed from a pool, and whether anything set on a previous borrow's session is
+still there.
+
+{name}`Borrowed.newSession` exists because a pool can't preserve session state and an application
+can't detect that for itself: a {name}`Conn` carries no identity to compare against one held
+before, so without this the only correct thing an application could do is re-establish its session
+state on every single borrow. See {lit}`Pool.withBorrowed`.
+-/
+structure Borrowed where
+  /-- The connection, usable for the duration of the borrow. -/
+  conn : Conn
+  /--
+  Whether this borrow starts a session the application hasn't set up yet, either because the pool
+  has just opened this connection or because the last borrow of it didn't finish.
+  -/
+  newSession : Bool
+
 /-- Options for {lit}`Pool.create`. -/
 structure PoolOptions where
   /--
@@ -153,7 +172,7 @@ def create (conninfo : String) (size : Nat) (opts : PoolOptions := {}) : IO Pool
   let initial ← if opts.requireConnection then
       let conn ← «open» conninfo
       let (mono, wall) ← readClocks
-      pure [({ conn, mono, wall } : Idle)]
+      pure [({ conn, mono, wall, newSession := true } : Idle)]
     else pure []
   let permits ← Std.CloseableChannel.new (capacity := some size)
   for _ in [:size] do
@@ -183,9 +202,9 @@ private def takeIdle (pool : Pool) : IO (Option Idle) :=
     | [] => return none
     | entry :: rest => set rest; return some entry
 
-private def putIdle (pool : Pool) (conn : Conn) : IO Unit := do
+private def putIdle (pool : Pool) (conn : Conn) (newSession : Bool) : IO Unit := do
   let (mono, wall) ← readClocks
-  pool.idle.atomically (modify ({ conn, mono, wall } :: ·))
+  pool.idle.atomically (modify ({ conn, mono, wall, newSession } :: ·))
 
 /--
 Opens a connection for a permit the caller already holds.
@@ -237,25 +256,59 @@ as opening one for a permit that had none: a connection that fails its check is 
 connection the pool has. Replacing happens before the caller sees anything, so nothing the caller
 runs is ever repeated, and no handle the caller derives can outlive the connection it came from.
 -/
-private def connectionFor (pool : Pool) : IO Conn := do
+private def connectionFor (pool : Pool) : IO Borrowed := do
   match ← pool.takeIdle with
-  | none => pool.fill
+  | none =>
+    let conn ← pool.fill
+    return { conn, newSession := true }
   | some entry =>
     if ← entry.conn.isLive then
-      if ← pool.staleAfterIdle entry then pool.replace else return entry.conn
+      if ← pool.staleAfterIdle entry then
+        let conn ← pool.replace
+        return { conn, newSession := true }
+      else
+        return { conn := entry.conn, newSession := entry.newSession }
     else
-      pool.replace
+      let conn ← pool.replace
+      return { conn, newSession := true }
 
-private def acquire (pool : Pool) : IO Conn := do
+private def acquire (pool : Pool) : IO Borrowed := do
   match ← pool.permits.sync.recv with
   | none => throw <| IO.userError "Postgres.Pool: connection channel closed unexpectedly"
   | some () => pool.connectionFor
 
-private def release (pool : Pool) (conn : Conn) : IO Unit := do
+private def release (pool : Pool) (conn : Conn) (newSession : Bool) : IO Unit := do
   -- The connection goes back before the permit, so a caller taking the permit finds it there
   -- rather than opening a second connection while this one sits idle.
-  pool.putIdle conn
+  pool.putIdle conn newSession
   pool.permits.sync.send ()
+
+/--
+Runs {name}`action` against a connection borrowed from {name}`pool`, telling it whether the
+session is one it has already set up.
+
+Identical to {lit}`Pool.withConn` except for what {name}`action` receives, and worth using instead
+of it only when the application keeps session-scoped state, such as temporary tables. Everything
+{lit}`Pool.withConn` documents applies here too.
+
+{name (full := Borrowed.newSession)}`newSession` is {lean}`true` when the pool has just opened this
+connection, and also when the previous borrow of it didn't finish, since a setup that failed
+part-way leaves nothing that can be relied on. It follows that {name}`action` may be told the
+session is new more than once for the same connection, so whatever it does in response needs to be
+safe to repeat.
+-/
+def withBorrowed (pool : Pool) (action : Borrowed → IO α) : IO α := do
+  let borrowed ← pool.acquire
+  -- Carrying the outcome into the release rather than clearing the flag at handover: an action
+  -- that threw may have thrown during its own setup, and reporting that session as established
+  -- would leave the next borrow relying on state that was never put there.
+  let completed ← IO.mkRef false
+  try
+    let result ← action borrowed
+    completed.set true
+    pure result
+  finally
+    pool.release borrowed.conn (if ← completed.get then false else borrowed.newSession)
 
 /--
 Runs {name}`action` against a connection borrowed from {name}`pool`, from synchronous
@@ -282,27 +335,62 @@ takes to discover is what libpq's {lit}`tcp_user_timeout` and {lit}`keepalives_*
 parameters are for, and they have to be set in {name (full := Pool.conninfo)}`conninfo` by the
 application.
 
+Nothing set on the session survives past the end of {name}`action`. A replacement is a new
+connection and so a new session, and even without one there's no guarantee two borrows land on the
+same connection. Setting something in one borrow and relying on it in a later one appears to work
+for exactly as long as no connection is replaced and every borrow happens to get the same one,
+which is to say it fails only in production and only intermittently. An application that does keep
+session-scoped state should borrow with {lit}`Pool.withBorrowed` instead, which says whether the
+session has been set up yet, so it needn't guess and needn't redo the work on every borrow.
+
+What to do instead depends on the state:
+
+Server settings belong in {name (full := Pool.conninfo)}`conninfo`, through libpq's {lit}`options`
+(e.g. {lit}`options='-c search_path=myschema'`) or a keyword of their own like
+{lit}`application_name`. The server applies these as each connection is made, so a replacement
+picks them up at no cost and without the application doing anything.
+
+Temporary tables belong inside the {name}`action` that uses them, and so do advisory locks: one
+taken at session scope and held across borrows is broken whether or not anything is ever replaced,
+since the next borrow may land on a different connection, and the transaction-scoped variants are
+bounded by the action anyway.
+
+{lit}`LISTEN` doesn't work through a pool at all, since notifications only reach the connection
+that registered them and only while it's borrowed. It needs a connection of its own, opened with
+{lit}`Postgres.open` and kept out of the pool.
+
 Callers running inside {name (full := Std.Async.Async)}`Std.Async.Async` (e.g. a fiber-multiplexed
 HTTP handler) should use {lit}`Pool.withConnAsync` instead. Blocking the underlying OS thread here
 while waiting for a free connection would stall every other fiber sharing that thread, a milder
 version of the exact hazard this pool exists to prevent.
 -/
-def withConn (pool : Pool) (action : Conn → IO α) : IO α := do
-  let conn ← pool.acquire
-  try
-    action conn
-  finally
-    pool.release conn
+def withConn (pool : Pool) (action : Conn → IO α) : IO α :=
+  pool.withBorrowed (fun borrowed => action borrowed.conn)
 
-private def acquireAsync (pool : Pool) : Std.Async.Async Conn := do
+private def acquireAsync (pool : Pool) : Std.Async.Async Borrowed := do
   match ← Std.Async.Async.ofIOTask pool.permits.recv with
   | none => throw <| IO.userError "Postgres.Pool: connection channel closed unexpectedly"
   | some () => pool.connectionFor
 
-private def releaseAsync (pool : Pool) (conn : Conn) : Std.Async.Async Unit := do
-  pool.putIdle conn
+private def releaseAsync (pool : Pool) (conn : Conn) (newSession : Bool) : Std.Async.Async Unit := do
+  pool.putIdle conn newSession
   let task ← pool.permits.send ()
   Std.Async.Async.ofAsyncTask (task.map (Except.mapError (IO.userError ∘ toString)))
+
+/--
+{name}`Pool.withBorrowed`'s counterpart for
+{name (full := Std.Async.Async)}`Std.Async.Async` code, waiting for a free connection the way
+{lit}`Pool.withConnAsync` does.
+-/
+def withBorrowedAsync (pool : Pool) (action : Borrowed → IO α) : Std.Async.Async α := do
+  let borrowed ← pool.acquireAsync
+  let completed ← IO.mkRef false
+  try
+    let result ← action borrowed
+    completed.set true
+    pure result
+  finally
+    pool.releaseAsync borrowed.conn (if ← completed.get then false else borrowed.newSession)
 
 /--
 Runs {name}`action` against a connection borrowed from {name}`pool`, from
@@ -315,12 +403,8 @@ concurrent requests sharing that thread while the pool is empty. {name}`action` 
 as ordinary blocking {name (full := IO)}`IO`, since the underlying libpq calls it makes are
 synchronous no matter which monad calls them.
 -/
-def withConnAsync (pool : Pool) (action : Conn → IO α) : Std.Async.Async α := do
-  let conn ← pool.acquireAsync
-  try
-    action conn
-  finally
-    pool.releaseAsync conn
+def withConnAsync (pool : Pool) (action : Conn → IO α) : Std.Async.Async α :=
+  pool.withBorrowedAsync (fun borrowed => action borrowed.conn)
 
 end Pool
 
