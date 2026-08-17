@@ -119,13 +119,24 @@ private def fill (pool : Pool) : IO Conn := do
     pool.permits.sync.send ()
     throw e
 
+/--
+Turns a permit the caller already holds into a connection that was usable at the moment it was
+handed over.
+
+An idle connection the server has closed is dropped and replaced here, which is the same operation
+as opening one for a permit that had none: a connection that fails its check is simply not a
+connection the pool has. Replacing happens before the caller sees anything, so nothing the caller
+runs is ever repeated, and no handle the caller derives can outlive the connection it came from.
+-/
+private def connectionFor (pool : Pool) : IO Conn := do
+  match ← pool.takeIdle with
+  | none => pool.fill
+  | some conn => if ← conn.isLive then return conn else pool.fill
+
 private def acquire (pool : Pool) : IO Conn := do
   match ← pool.permits.sync.recv with
   | none => throw <| IO.userError "Postgres.Pool: connection channel closed unexpectedly"
-  | some () =>
-    match ← pool.takeIdle with
-    | some conn => return conn
-    | none => pool.fill
+  | some () => pool.connectionFor
 
 private def release (pool : Pool) (conn : Conn) : IO Unit := do
   -- The connection goes back before the permit, so a caller taking the permit finds it there
@@ -143,6 +154,21 @@ succeeds or throws, then returns or rethrows {name}`action`'s outcome. Modeled o
 {name}`Postgres.transaction`'s bracket shape, and for the same reason: it's the only way to use a
 pooled connection, so a checked-out connection can never accidentally be left unreturned.
 
+A connection the server closed while it sat idle in the pool is replaced before {name}`action` ever
+sees it, so an application that stopped issuing statements for a while, or whose database restarted
+underneath it, doesn't have to detect that or retry for itself. Replacement happens only at this
+point, never during {name}`action`: nothing {name}`action` has already run is repeated, so a
+statement that may have taken effect can't be applied twice, and a {name}`Postgres.Stmt` built from
+the connection can't be left pointing at one that has been swapped out. An error the server itself
+returned, such as a constraint violation, isn't a reason to replace anything and reaches the caller
+untouched.
+
+A connection dropped silently by the network, with no close delivered, can't be told apart from a
+working one without sending something; see {name}`Postgres.Conn.isLive`. Bounding how long that
+takes to discover is what libpq's {lit}`tcp_user_timeout` and {lit}`keepalives_*` connection
+parameters are for, and they have to be set in {name (full := Pool.conninfo)}`conninfo` by the
+application.
+
 Callers running inside {name (full := Std.Async.Async)}`Std.Async.Async` (e.g. a fiber-multiplexed
 HTTP handler) should use {lit}`Pool.withConnAsync` instead. Blocking the underlying OS thread here
 while waiting for a free connection would stall every other fiber sharing that thread, a milder
@@ -158,10 +184,7 @@ def withConn (pool : Pool) (action : Conn → IO α) : IO α := do
 private def acquireAsync (pool : Pool) : Std.Async.Async Conn := do
   match ← Std.Async.Async.ofIOTask pool.permits.recv with
   | none => throw <| IO.userError "Postgres.Pool: connection channel closed unexpectedly"
-  | some () =>
-    match ← pool.takeIdle with
-    | some conn => return conn
-    | none => pool.fill
+  | some () => pool.connectionFor
 
 private def releaseAsync (pool : Pool) (conn : Conn) : Std.Async.Async Unit := do
   pool.putIdle conn

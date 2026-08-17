@@ -185,6 +185,78 @@ def testPoolCreateConnectionRequirement : TestM Unit :=
     recordSuccess "Pool.create requires a connection by default, and defers the failure when told not to"
 
 /--
+A connection closed server-side while it sat in the pool is replaced, so the next borrow gets one
+that works. This is the whole point of the exercise: an application idle across a database restart
+must not serve the next request an error.
+
+A canary connection is closed after the pool's and waited for, which establishes that the close of
+the pool's connection has arrived before the borrow that has to notice it. Nothing here waits on a
+timeout; the wait is for a few milliseconds of network delivery.
+-/
+def testPoolReplacesClosedConnection : TestM Unit :=
+  withHeader "=== Testing a pool replaces a connection closed while idle ===" <| guardTest do
+    let pool ← Pool.create "" 1
+    let observer ← «open» ""
+    let pooledPid ← pool.withConn backendPid
+
+    let canary ← «open» ""
+    let canaryPid ← backendPid canary
+    terminateBackend observer pooledPid
+    terminateBackend observer canaryPid
+    unless ← waitUntilNotLive canary 200 do
+      throw <| IO.userError "the canary connection was never reported as closed"
+
+    let replacedPid ← pool.withConn backendPid
+    if replacedPid == pooledPid then
+      throw <| IO.userError "expected the closed connection to have been replaced"
+    recordSuccess s!"pool replaced a connection closed while idle (backend {pooledPid} to {replacedPid})"
+
+/--
+A statement the server rejects is not a reason to replace a connection. The error must reach the
+caller with its SQLSTATE, and the connection it happened on must still be the one the pool holds:
+treating every failure as a connection failure would silently discard a working connection on every
+constraint violation, and would be invisible except as unexplained reconnections.
+-/
+def testPoolKeepsConnectionAfterServerError : TestM Unit :=
+  withHeader "=== Testing a pool keeps its connection after a server-side error ===" <| guardTest do
+    let pool ← Pool.create "" 1
+    let before ← pool.withConn backendPid
+
+    let caught ← try
+        pool.withConn (fun conn => do (← prepare conn "SELECT 1 / 0").exec)
+        pure (none : Option IO.Error)
+      catch e => pure (some e)
+    let some err := caught
+      | throw <| IO.userError "expected a rejected statement to reach the caller"
+    let some parsed := Error.ofIOError? err
+      | throw <| IO.userError s!"rejected statement reached the caller with no SQLSTATE: {err}"
+    if parsed.sqlstate != "22012" then
+      throw <| IO.userError s!"expected SQLSTATE 22012, got '{parsed.sqlstate}'"
+
+    let after ← pool.withConn backendPid
+    if after != before then
+      throw <| IO.userError
+        s!"a statement the server rejected caused the connection to be replaced ({before} to {after})"
+    recordSuccess s!"server-side error surfaced as {parsed.sqlstate} and the connection was kept"
+
+/--
+An exception raised by the caller's own code, having nothing to do with the connection, is not a
+reason to replace it either.
+-/
+def testPoolKeepsConnectionAfterCallerError : TestM Unit :=
+  withHeader "=== Testing a pool keeps its connection after a caller's own error ===" <| guardTest do
+    let pool ← Pool.create "" 1
+    let before ← pool.withConn backendPid
+    try
+      pool.withConn (fun _ => throw (IO.userError "boom") : Conn → IO Unit)
+    catch _ => pure ()
+    let after ← pool.withConn backendPid
+    if after != before then
+      throw <| IO.userError
+        s!"a caller's own exception caused the connection to be replaced ({before} to {after})"
+    recordSuccess "connection kept after an exception unrelated to it"
+
+/--
 Capacity survives failed opens. A pool that gives up a unit of capacity whenever an open fails
 empties during an outage and then blocks every later borrow indefinitely, a failure that outlives
 the outage that caused it and looks nothing like it.

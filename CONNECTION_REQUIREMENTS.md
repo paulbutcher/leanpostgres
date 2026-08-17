@@ -378,6 +378,23 @@ pool, and route a connection that fails it into the phase 3 filling path, so tha
 unit of capacity and replacing a dead connection are the same operation rather than two. Discharges
 R2, R6 and R13, and R1 for mode A, and demonstrations 1 and 2.
 
+*Done.* Taking a connection from the pool checks it first, and one that fails is dropped rather
+than handed over, which leaves the permit holding no connection and so falls into the same path
+that opens one for a permit that never had one. The two cases are one line, not two mechanisms.
+Demonstration 1 was confirmed to fail without the check, with the error an application would
+actually serve: `[] server closed the connection unexpectedly`.
+
+R6 holds by construction rather than by care: the only point at which a connection is replaced is
+before the caller's action begins, so there is no moment at which a `Stmt` could be left addressing
+a connection the pool has since swapped out.
+
+Demonstration 2 is covered by a test that checks both halves, since the SQLSTATE surviving is only
+half the requirement. It asserts that a rejected statement reaches the caller as `22012` *and* that
+the pool still holds the same backend afterwards, which is what an implementation treating every
+error as a connection failure would break. Demonstration 7 arrived early and for free: comparing
+backend process ids before and after establishes that a caller's own exception replaces nothing,
+without needing the counters R10 will bring.
+
 **Phase 5: the idle threshold.** Add the interval R11 describes, measured as the greater of the two
 clocks, and a round-trip check for connections idle beyond it. Discharges R11, and R1 for mode B to
 the extent the consumer has configured R5. Demonstrations 4, 5 and 10 attach here, as does the
