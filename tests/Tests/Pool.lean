@@ -298,6 +298,63 @@ def testPoolChecksConnectionPastIdleThreshold : TestM Unit :=
     recordSuccess s!"pool checked a connection past its idle threshold (server last saw '{seen}')"
 
 /--
+A pool's counters separate a database that is quietly working from one that is flapping. Both serve
+every request, so without something to read there is nothing to tell them apart by.
+
+A healthy borrow must move nothing, or the counters would rise steadily whatever the database was
+doing and say as little as no counters at all.
+-/
+def testPoolStatisticsCountReplacement : TestM Unit :=
+  withHeader "=== Testing pool statistics count a replacement ===" <| guardTest do
+    let pool ← Pool.create "" 1
+    let observer ← «open» ""
+    let pooledPid ← pool.withConn backendPid
+
+    let quiet ← pool.statistics
+    let _ ← pool.withConn backendPid
+    unless (← pool.statistics) == quiet do
+      throw <| IO.userError "a borrow that replaced nothing still moved the counters"
+
+    let canary ← «open» ""
+    let canaryPid ← backendPid canary
+    terminateBackend observer pooledPid
+    terminateBackend observer canaryPid
+    unless ← waitUntilNotLive canary 200 do
+      throw <| IO.userError "the canary connection was never reported as closed"
+
+    let _ ← pool.withConn backendPid
+    let after ← pool.statistics
+    if after.discarded != quiet.discarded + 1 then
+      throw <| IO.userError
+        s!"expected one discarded connection, went from {quiet.discarded} to {after.discarded}"
+    if after.opened != quiet.opened + 1 then
+      throw <| IO.userError
+        s!"expected one connection opened to replace it, went from {quiet.opened} to {after.opened}"
+    if after.openFailures != quiet.openFailures then
+      throw <| IO.userError "a replacement that succeeded was counted as a failure"
+    recordSuccess "pool statistics counted a successful replacement and ignored a healthy borrow"
+
+/--
+A replacement that could not be completed is counted separately from one that could, which is the
+distinction that matters: a pool discarding connections and reopening them is coping, and a pool
+discarding them and failing to reopen is not.
+-/
+def testPoolStatisticsCountOpenFailure : TestM Unit :=
+  withHeader "=== Testing pool statistics count a failed open ===" <| guardTest do
+    let pool ← Pool.create unreachableConninfo 1 { requireConnection := false }
+    let before ← pool.statistics
+    try
+      pool.withConn (fun _ => pure () : Conn → IO Unit)
+    catch _ => pure ()
+    let after ← pool.statistics
+    if after.openFailures != before.openFailures + 1 then
+      throw <| IO.userError
+        s!"expected one failed open, went from {before.openFailures} to {after.openFailures}"
+    if after.opened != before.opened then
+      throw <| IO.userError "a failed open was counted as a connection opened"
+    recordSuccess "pool statistics counted a failed open without counting it as a success"
+
+/--
 Capacity survives failed opens. A pool that gives up a unit of capacity whenever an open fails
 empties during an outage and then blocks every later borrow indefinitely, a failure that outlives
 the outage that caused it and looks nothing like it.

@@ -428,6 +428,21 @@ A working.
 carrying the creation choice from phase 3 and the interval from phase 5, defaulted so that existing
 call sites are unaffected. Discharges R10, confirms R8, and discharges demonstration 7.
 
+*Done.* `Pool.statistics` returns counts of connections opened, connections discarded as unusable,
+and opens that failed. Those three separate the two states R10 asks to be told apart: a replacement
+that worked raises opened and discarded together, one that failed raises discarded and openFailures
+together, and a borrow with nothing to discard that still couldn't open raises openFailures alone.
+A borrow that replaced nothing moves none of them, which the test asserts explicitly, since
+counters that rise on every borrow would say no more than no counters at all.
+
+Most of this phase was already standing. The options surface arrived with the requirements it
+serves, in phases 3 and 5, and demonstration 7 in phase 4, where comparing backend process ids
+turned out to answer it without needing counters at all.
+
+R8 is confirmed by the suite: every `Pool.create` call written before any of this work compiles and
+passes unchanged, including the concurrency-bound and release-on-throw tests that predate the
+requirements document.
+
 **Phase 7 (should): session initialisation.** A way for an application to prepare a newly opened
 connection, so that a replacement is equivalent to its predecessor rather than merely functional.
 Discharges R15. Independent of phases 4 to 6 and can be deferred without affecting them.

@@ -16,6 +16,28 @@ namespace Postgres
 
 public section
 
+/--
+Running totals of what a pool has had to do to keep working, none of which an application can
+otherwise see.
+
+A database that restarts every few seconds and one that never restarts both serve every request
+successfully, and are told apart only by how much work that took. The counts only ever rise;
+what's informative is how fast.
+
+A replacement that worked shows up as {name}`PoolStats.discarded` and {name}`PoolStats.opened`
+rising together. One that failed shows up as {name}`PoolStats.discarded` and
+{name}`PoolStats.openFailures` rising together instead, and a borrow that found nothing to discard
+and still couldn't open shows up as {name}`PoolStats.openFailures` alone.
+-/
+structure PoolStats where
+  /-- Connections successfully opened, counting the pool's first and every replacement since. -/
+  opened : Nat
+  /-- Connections found unusable when borrowed, and discarded rather than handed over. -/
+  discarded : Nat
+  /-- Attempts to open a connection that failed. -/
+  openFailures : Nat
+deriving Repr, BEq, Inhabited
+
 /-- A connection nobody is using, alongside readings of both clocks from when it was returned. -/
 private structure Idle where
   conn : Conn
@@ -81,6 +103,7 @@ structure Pool where
   private permits : Std.CloseableChannel Unit
   private idle : Std.Mutex (List Idle)
   private idleThresholdNanos : Option Nat
+  private stats : Std.Mutex PoolStats
 
 /-- Options for {lit}`Pool.create`. -/
 structure PoolOptions where
@@ -137,7 +160,16 @@ def create (conninfo : String) (size : Nat) (opts : PoolOptions := {}) : IO Pool
     permits.sync.send ()
   let idle ← Std.Mutex.new initial
   let idleThresholdNanos := opts.validateAfterIdle.map (·.toNanoseconds.toInt.toNat)
-  return { conninfo, size, permits, idle, idleThresholdNanos }
+  let stats ← Std.Mutex.new
+    { opened := initial.length, discarded := 0, openFailures := 0 : PoolStats }
+  return { conninfo, size, permits, idle, idleThresholdNanos, stats }
+
+/-- A snapshot of what {name}`pool` has had to do to keep working. See {name}`PoolStats`. -/
+def statistics (pool : Pool) : IO PoolStats :=
+  pool.stats.atomically get
+
+private def record (pool : Pool) (f : PoolStats → PoolStats) : IO Unit :=
+  pool.stats.atomically (modify f)
 
 /--
 Takes the most recently returned idle connection, or {lean}`none` if there are none.
@@ -165,11 +197,19 @@ after the database itself came back.
 -/
 private def fill (pool : Pool) : IO Conn := do
   try
-    «open» pool.conninfo
+    let conn ← «open» pool.conninfo
+    pool.record (fun s => { s with opened := s.opened + 1 })
+    return conn
   catch e =>
     -- Cannot block: the caller holds a permit, so the channel is below its capacity.
     pool.permits.sync.send ()
+    pool.record (fun s => { s with openFailures := s.openFailures + 1 })
     throw e
+
+/-- Throws away a connection that can't be used and opens its replacement. -/
+private def replace (pool : Pool) : IO Conn := do
+  pool.record (fun s => { s with discarded := s.discarded + 1 })
+  pool.fill
 
 /--
 Whether an idle connection has been sitting long enough to be worth sending something to, and has
@@ -202,9 +242,9 @@ private def connectionFor (pool : Pool) : IO Conn := do
   | none => pool.fill
   | some entry =>
     if ← entry.conn.isLive then
-      if ← pool.staleAfterIdle entry then pool.fill else return entry.conn
+      if ← pool.staleAfterIdle entry then pool.replace else return entry.conn
     else
-      pool.fill
+      pool.replace
 
 private def acquire (pool : Pool) : IO Conn := do
   match ← pool.permits.sync.recv with
