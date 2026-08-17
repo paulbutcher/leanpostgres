@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 -/
 import Postgres
 import PostgresTest.Framework
+import Tests.Helpers
 import Plausible
 
 open Postgres
@@ -100,3 +101,87 @@ def testPoolSizeInvariantProperty : TestM Unit :=
         throw <| IO.userError
           s!"pool size invariant violated: size={size}, borrowers={borrowers}, maxObserved={maxObserved}"
     recordSuccess "pool size invariant held across 15 generated (size, borrower-count) pairs"
+
+/--
+A pool created without establishing a connection is fully usable: the connections it hands out are
+opened by the borrows that need them, and it still bounds concurrency to its capacity.
+-/
+def testPoolCreatedWithoutConnecting : TestM Unit :=
+  withHeader "=== Testing a pool created without connecting ===" <| guardTest do
+    let size := 3
+    let pool ← Pool.create "" size { requireConnection := false }
+    let (maxObserved, allOk) ← runPoolBorrowers pool (size + 2)
+    if !allOk then
+      throw <| IO.userError "expected every borrower against a lazily filled pool to complete"
+    if maxObserved > size then
+      throw <| IO.userError
+        s!"expected at most {size} concurrently checked-out connections, observed {maxObserved}"
+    recordSuccess s!"pool created without connecting served {size + 2} borrowers"
+
+/--
+Creating a pool requires a connection unless the caller says otherwise. A connection string that
+can never work fails at startup by default, where a deployment can notice; an application that has
+to survive starting while its database is unreachable opts out, and meets the failure at its first
+borrow instead.
+-/
+def testPoolCreateConnectionRequirement : TestM Unit :=
+  withHeader "=== Testing Pool.create's connection requirement ===" <| guardTest do
+    let threw ← try
+        let _ ← Pool.create unreachableConninfo 3
+        pure false
+      catch _ => pure true
+    unless threw do
+      throw <| IO.userError
+        "expected Pool.create to fail by default when the database is unreachable"
+
+    let pool ← Pool.create unreachableConninfo 3 { requireConnection := false }
+    let caught ← try
+        pool.withConn (fun _ => pure () : Conn → IO Unit)
+        pure (none : Option IO.Error)
+      catch e => pure (some e)
+    if caught.isNone then
+      throw <| IO.userError "expected borrowing against an unreachable database to fail"
+    recordSuccess "Pool.create requires a connection by default, and defers the failure when told not to"
+
+/--
+Capacity survives failed opens. A pool that gives up a unit of capacity whenever an open fails
+empties during an outage and then blocks every later borrow indefinitely, a failure that outlives
+the outage that caused it and looks nothing like it.
+
+Every borrow here fails, many times over the pool's capacity; the pool must still admit `size`
+concurrent callers afterwards.
+
+When this test does fail, the run hangs after reporting it, because borrowers left waiting on a
+pool that has lost capacity keep the process from exiting. That is unavoidable: establishing that
+borrows no longer block requires borrows that would block if they did. The recorded failure is
+printed before the hang.
+-/
+def testPoolCapacitySurvivesFailedOpens : TestM Unit :=
+  withHeader "=== Testing pool capacity survives failed opens ===" <| guardTest do
+    let size := 3
+    let attempts := size * 3
+    let pool ← Pool.create unreachableConninfo size { requireConnection := false }
+
+    -- Every phase waits with a bound rather than blocking. A pool that loses capacity leaves
+    -- borrowers waiting on a channel nothing will be sent to, so blocking on them would hang the
+    -- suite instead of failing it.
+    let failing ← (List.range attempts).toArray.mapM fun _ =>
+      IO.asTask <| try
+          pool.withConn (fun _ => pure () : Conn → IO Unit)
+          pure false
+        catch _ => pure true
+    unless ← waitForTasks failing 500 do
+      throw <| IO.userError
+        s!"only some of {attempts} borrows completed, so the pool is losing capacity per failed open"
+    for task in failing do
+      match task.get with
+      | .ok true => pure ()
+      | .ok false => throw <| IO.userError "expected every borrow against an unreachable database to fail"
+      | .error e => throw e
+
+    let after ← (List.range size).toArray.mapM fun _ =>
+      IO.asTask <| try pool.withConn (fun _ => pure () : Conn → IO Unit) catch _ => pure ()
+    unless ← waitForTasks after 500 do
+      throw <| IO.userError
+        s!"pool stopped admitting {size} concurrent callers after {attempts} failed opens"
+    recordSuccess s!"capacity of {size} survived {attempts} failed opens"

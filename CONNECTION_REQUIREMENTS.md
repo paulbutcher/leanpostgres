@@ -344,6 +344,32 @@ not it succeeded. Creation then establishes one connection rather than `size`. D
 and R9, and demonstrations 6 and 8. The concurrency bound the existing pool tests already check
 must be unaffected.
 
+*Done, with one requirement only partly met.* The pool now holds units of capacity rather than
+connections, each either carrying one or carrying the right to open one, and every path out of a
+borrow returns exactly one unit. Creation opens one connection instead of `size`, and
+`PoolOptions.requireConnection` carries R14's choice, defaulting as decided. Existing call sites
+are untouched.
+
+R12 is checked by a test that was confirmed to catch a pool dropping a unit of capacity per failed
+open, reporting it as such. That test has an unavoidable wart, recorded alongside it: when it
+fails, the run hangs afterwards, because establishing that borrows no longer block requires
+borrows that would block if they did, and a blocked borrow keeps the process alive. The failure is
+reported before the hang.
+
+R9 is met for creation and not for steady state. Capacity is recycled in the order it is returned,
+so a pool of eight serving one caller at a time still opens eight connections over its first eight
+borrows; only the ninth onwards reuses. Fixing that means handing back the most recently used unit
+rather than the least, which the FIFO channel the pool is built on cannot express. Recorded rather
+than fixed, because it is a `should`, and because the change is a redesign of the structure that
+carries the concurrency bound.
+
+Demonstrations 6 and 8 are each half exercised. The half that matters, that capacity is not lost
+and the pool does not deadlock, is tested. The half that needs the database to stop and then start
+is not, because the suite runs against a server it does not control. What is relied on instead:
+a unit of capacity returned after a failed open is `vacant`, indistinguishable from one that has
+never been filled, so the first successful open after an outage takes the same path as the first
+open of a fresh pool, which is covered.
+
 **Phase 4: replacement at borrow.** Apply the phase 2 check when a connection is taken from the
 pool, and route a connection that fails it into the phase 3 filling path, so that filling an empty
 unit of capacity and replacing a dead connection are the same operation rather than two. Discharges

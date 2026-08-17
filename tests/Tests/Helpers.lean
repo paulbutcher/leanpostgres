@@ -46,6 +46,30 @@ def waitUntilNotLive (conn : Conn) : Nat → IO Bool
     IO.sleep 10
     waitUntilNotLive conn attempts
 
+/--
+A connection string addressing a reachable host on a port nothing listens on, so every open fails
+immediately with "connection refused" rather than depending on a timeout to give up.
+-/
+def unreachableConninfo : String :=
+  "host=host.docker.internal port=1 dbname=leanpostgres user=leanpostgres connect_timeout=5"
+
+/--
+Waits for every task to finish, polling up to `attempts` times. Returns whether they all did.
+
+Blocking on a task that never completes would hang the suite rather than fail it, which is exactly
+the symptom of a pool that has lost capacity, so anything testing for that has to bound its wait.
+-/
+def waitForTasks (tasks : Array (Task α)) : Nat → IO Bool
+  | 0 => return false
+  | attempts + 1 => do
+    let mut pending := false
+    for task in tasks do
+      unless ← IO.hasFinished task do
+        pending := true
+    unless pending do return true
+    IO.sleep 10
+    waitForTasks tasks attempts
+
 /-- The backend process id `conn` is connected to. -/
 def backendPid (conn : Conn) : IO String := do
   let stmt ← prepare conn "SELECT pg_backend_pid()"
