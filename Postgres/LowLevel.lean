@@ -324,10 +324,31 @@ def rollback (db : Conn) : IO Unit := do
   (← prepare db "ROLLBACK").exec
 
 /--
+Preserves the SQLSTATE of the error that ended an action when the rollback that followed it also
+failed.
+
+A rollback fails when the connection has died, which is exactly when the action's own error
+matters most. Rendering both errors into a fresh message would leave the caller unable to recover
+the code saying what actually went wrong, so the rollback's failure is appended to the message and
+the code is left where {name}`Postgres.Error.ofIOError?` can still find it. An error that carries
+no code to protect is passed through untouched rather than rewritten.
+-/
+private def rollbackFailureError (original rollbackError : IO.Error) : IO.Error :=
+  match Error.ofIOError? original with
+  | some err =>
+    IO.userError <| toString
+      { err with message := s!"{err.message} (the rollback that followed also failed: {rollbackError})" }
+  | none => original
+
+/--
 Executes {name}`action` within a transaction, automatically committing or rolling back.
 
 If {name}`action` succeeds, the transaction is committed. If it throws an exception, the
 transaction is rolled back before the exception is re-thrown.
+
+If the rollback itself fails, which normally means the connection has died, the exception reaching
+the caller is still the one that ended {name}`action`, with its SQLSTATE intact and the rollback's
+failure appended to its message.
 -/
 def transaction (db : Conn) (action : IO α) (opts : TransactionOptions := {}) : IO α := do
   beginTransaction db opts
@@ -337,7 +358,7 @@ def transaction (db : Conn) (action : IO α) (opts : TransactionOptions := {}) :
     return result
   catch e =>
     try rollback db
-    catch e' => throw <| IO.userError s!"Rollback failed: {e'}\nOriginal error: {e}"
+    catch e' => throw (rollbackFailureError e e')
     throw e
 
 end

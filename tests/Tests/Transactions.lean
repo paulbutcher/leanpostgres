@@ -67,3 +67,61 @@ def testTransactionCommitAndRollback (conn : Conn) : TestM Unit :=
       throw <| IO.userError "expected the rolled-back row to be absent after transaction threw"
 
     recordSuccess "transaction commit/rollback OK"
+
+/--
+Polls `observer` until the server no longer reports a backend for `pid`, giving up after
+`attempts` tries. Asking the server settles this definitively, where watching for the close to
+reach this client would only settle it eventually.
+-/
+def waitForBackendGone (observer : Conn) (pid : String) : Nat → IO Bool
+  | 0 => return false
+  | attempts + 1 => do
+    let stmt ← prepare observer "SELECT count(*) FROM pg_stat_activity WHERE pid = $1::int"
+    stmt.bindText 1 pid
+    let _ ← stmt.step
+    if (← stmt.columnText 0) == "0" then return true
+    IO.sleep 10
+    waitForBackendGone observer pid attempts
+
+/--
+An error raised inside a transaction reaches the caller with its SQLSTATE even when the connection
+dies before the rollback can run. A rollback failing is the characteristic symptom of exactly the
+connection loss that makes the original error worth reporting accurately, so this is the case in
+which the code is most easily lost and most needed.
+
+Works on its own connection, which it destroys.
+-/
+def testTransactionSqlstateSurvivesFailedRollback : TestM Unit :=
+  withHeader "=== Testing SQLSTATE survives a rollback that fails ===" <| guardTest do
+    let victim ← «open» ""
+    let observer ← «open» ""
+
+    let pidStmt ← prepare victim "SELECT pg_backend_pid()"
+    let _ ← pidStmt.step
+    let pid ← pidStmt.columnText 0
+
+    let caught ← try
+        transaction victim (do
+          let failed ← try
+              (← prepare victim "SELECT 1 / 0").exec
+              pure none
+            catch e => pure (some e)
+          let some original := failed
+            | throw <| IO.userError "expected division by zero to be rejected by the server"
+          let kill ← prepare observer "SELECT pg_terminate_backend($1::int)"
+          kill.bindText 1 pid
+          kill.exec
+          unless ← waitForBackendGone observer pid 200 do
+            throw <| IO.userError "backend was still running after pg_terminate_backend"
+          throw original : IO Unit)
+        pure (none : Option IO.Error)
+      catch e => pure (some e)
+
+    let some err := caught
+      | throw <| IO.userError "expected the transaction to rethrow the action's error"
+    let some parsed := Error.ofIOError? err
+      | throw <| IO.userError s!"error reached the caller with no recoverable SQLSTATE: {err}"
+    if parsed.sqlstate != "22012" then
+      throw <| IO.userError
+        s!"expected SQLSTATE 22012 to survive the failed rollback, got '{parsed.sqlstate}'"
+    recordSuccess s!"SQLSTATE {parsed.sqlstate} survived a rollback that failed"

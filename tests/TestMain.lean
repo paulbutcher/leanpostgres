@@ -37,6 +37,7 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testInterpolationMacros conn
     testTransactionOptionsCombinations conn
     testTransactionCommitAndRollback conn
+    testTransactionSqlstateSurvivesFailedRollback
     testUniqueViolationSqlstate conn
     testPersonRowDeriving conn
     testNullablePersonRowDeriving conn
