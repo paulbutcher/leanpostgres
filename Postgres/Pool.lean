@@ -5,6 +5,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 module
 public import Postgres.LowLevel
 public import Std.Sync.Channel
+public import Std.Sync.Mutex
 public import Std.Async
 
 set_option doc.verso true
@@ -13,20 +14,6 @@ set_option linter.missingDocs true
 namespace Postgres
 
 public section
-
-/--
-One unit of a pool's capacity: either a connection ready to be handed out, or the right to open
-one.
-
-Capacity is what the pool holds a fixed number of, not connections. The two came to the same thing
-while every connection was opened upfront and none was ever replaced, and they stop being the same
-thing as soon as either changes.
--/
-private inductive Slot where
-  /-- A connection available to be borrowed. -/
-  | filled (conn : Conn)
-  /-- Capacity with no connection behind it yet. -/
-  | vacant
 
 /--
 A fixed-capacity pool of connections, to share safely across concurrent tasks.
@@ -38,16 +25,21 @@ hands out one connection per caller at a time via {lit}`Pool.withConn`/{lit}`Poo
 which are the only ways to obtain one; there's no separate acquire/release pair to misuse and leak
 a connection that never gets returned.
 
-Built on {name (full := Std.CloseableChannel)}`Std.CloseableChannel`, a bounded,
-multi-producer/multi-consumer FIFO channel holding {lit}`size` units of capacity. Borrowing
-receives one (waiting if none are free) and opens a connection if that unit doesn't already carry
-one; returning sends it back. Connections are therefore established by the borrows that need them
-rather than all at once, so creating a pool costs one connection rather than {lit}`size`. Capacity
-is recycled in the order it's returned, though, so a pool that serves at least {lit}`size` borrows
-ends up holding {lit}`size` connections whether or not it was ever busy enough to need them all at
-once.
+Capacity and connections are tracked separately. A
+{name (full := Std.CloseableChannel)}`Std.CloseableChannel` holds {lit}`size` permits, one per unit
+of capacity, and is what bounds concurrency and what a caller waits on; the connections themselves
+sit in a stack of the ones nobody is using. Borrowing takes a permit, waiting if none are free,
+then takes the most recently returned connection, opening one only when the stack is empty.
+Returning pushes the connection back and releases the permit.
 
-Every path out of a borrow puts exactly one unit back, including the path where opening a
+Connections are therefore established by the borrows that need them rather than all at once, so
+creating a pool costs one connection rather than {lit}`size`, and a pool serving one caller at a
+time only ever opens one however large its capacity. Taking the most recently returned connection
+rather than the least is what makes a pool that has been busy settle back onto one afterwards: the
+connections a burst forced it to open fall out of use instead of being kept in rotation, leaving
+the server free to reclaim them.
+
+Every path out of a borrow releases exactly one permit, including the path where opening a
 connection failed, so {lit}`size` is invariant: a pool whose database has been unreachable for any
 length of time still admits exactly {lit}`size` concurrent callers once it returns. The pool never
 closes the channel, so a closed-channel result from it is an internal invariant violation, not a
@@ -58,7 +50,8 @@ structure Pool where
   conninfo : String
   /-- The number of connections the pool will hold at once. -/
   size : Nat
-  private channel : Std.CloseableChannel Slot
+  private permits : Std.CloseableChannel Unit
+  private idle : Std.Mutex (List Conn)
 
 /-- Options for {lit}`Pool.create`. -/
 structure PoolOptions where
@@ -88,37 +81,57 @@ time via {lit}`Pool.withConn`/{lit}`Pool.withConnAsync`.
 def create (conninfo : String) (size : Nat) (opts : PoolOptions := {}) : IO Pool := do
   if size = 0 then
     throw <| IO.userError "pool size must be greater than 0"
-  let channel ← Std.CloseableChannel.new (capacity := some size)
-  let first ← if opts.requireConnection then Slot.filled <$> «open» conninfo else pure .vacant
-  channel.sync.send first
-  for _ in [1:size] do
-    channel.sync.send .vacant
-  return { conninfo, size, channel }
+  let initial ← if opts.requireConnection then (fun conn => [conn]) <$> «open» conninfo else pure []
+  let permits ← Std.CloseableChannel.new (capacity := some size)
+  for _ in [:size] do
+    permits.sync.send ()
+  let idle ← Std.Mutex.new initial
+  return { conninfo, size, permits, idle }
 
 /--
-Opens a connection for a unit of capacity the caller already holds.
+Takes the most recently returned idle connection, or {lean}`none` if there are none.
 
-A failed open returns that unit to the pool vacant rather than dropping it. Dropping it would
-shrink the pool by one per failure, so a database unreachable for long enough would leave a pool
-that is permanently empty and every later borrow waiting on a channel nothing will ever be sent
-to, long after the database itself came back.
+The lock is held only for the length of a list operation, never across anything that waits, so
+taking it here can't stall a fiber that {lit}`Pool.withConnAsync` is multiplexing.
+-/
+private def takeIdle (pool : Pool) : IO (Option Conn) :=
+  pool.idle.atomically do
+    match ← get with
+    | [] => return none
+    | conn :: rest => set rest; return some conn
+
+private def putIdle (pool : Pool) (conn : Conn) : IO Unit :=
+  pool.idle.atomically (modify (conn :: ·))
+
+/--
+Opens a connection for a permit the caller already holds.
+
+A failed open releases that permit rather than swallowing it. Swallowing it would shrink the pool
+by one per failure, so a database unreachable for long enough would leave a pool that is
+permanently empty and every later borrow waiting on a channel nothing will ever be sent to, long
+after the database itself came back.
 -/
 private def fill (pool : Pool) : IO Conn := do
   try
     «open» pool.conninfo
   catch e =>
-    -- Cannot block: the caller holds a unit out, so the channel is below its capacity.
-    pool.channel.sync.send .vacant
+    -- Cannot block: the caller holds a permit, so the channel is below its capacity.
+    pool.permits.sync.send ()
     throw e
 
 private def acquire (pool : Pool) : IO Conn := do
-  match ← pool.channel.sync.recv with
+  match ← pool.permits.sync.recv with
   | none => throw <| IO.userError "Postgres.Pool: connection channel closed unexpectedly"
-  | some (.filled conn) => return conn
-  | some .vacant => pool.fill
+  | some () =>
+    match ← pool.takeIdle with
+    | some conn => return conn
+    | none => pool.fill
 
-private def release (pool : Pool) (conn : Conn) : IO Unit :=
-  pool.channel.sync.send (.filled conn)
+private def release (pool : Pool) (conn : Conn) : IO Unit := do
+  -- The connection goes back before the permit, so a caller taking the permit finds it there
+  -- rather than opening a second connection while this one sits idle.
+  pool.putIdle conn
+  pool.permits.sync.send ()
 
 /--
 Runs {name}`action` against a connection borrowed from {name}`pool`, from synchronous
@@ -143,13 +156,16 @@ def withConn (pool : Pool) (action : Conn → IO α) : IO α := do
     pool.release conn
 
 private def acquireAsync (pool : Pool) : Std.Async.Async Conn := do
-  match ← Std.Async.Async.ofIOTask pool.channel.recv with
+  match ← Std.Async.Async.ofIOTask pool.permits.recv with
   | none => throw <| IO.userError "Postgres.Pool: connection channel closed unexpectedly"
-  | some (.filled conn) => return conn
-  | some .vacant => pool.fill
+  | some () =>
+    match ← pool.takeIdle with
+    | some conn => return conn
+    | none => pool.fill
 
 private def releaseAsync (pool : Pool) (conn : Conn) : Std.Async.Async Unit := do
-  let task ← pool.channel.send (.filled conn)
+  pool.putIdle conn
+  let task ← pool.permits.send ()
   Std.Async.Async.ofAsyncTask (task.map (Except.mapError (IO.userError ∘ toString)))
 
 /--

@@ -344,11 +344,11 @@ not it succeeded. Creation then establishes one connection rather than `size`. D
 and R9, and demonstrations 6 and 8. The concurrency bound the existing pool tests already check
 must be unaffected.
 
-*Done, with one requirement only partly met.* The pool now holds units of capacity rather than
-connections, each either carrying one or carrying the right to open one, and every path out of a
-borrow returns exactly one unit. Creation opens one connection instead of `size`, and
-`PoolOptions.requireConnection` carries R14's choice, defaulting as decided. Existing call sites
-are untouched.
+*Done.* Capacity and connections are now separate things. A channel holds `size` permits, which is
+what bounds concurrency and what a caller waits on; the connections sit in a stack of the ones
+nobody is using. Every path out of a borrow releases exactly one permit. Creation opens one
+connection instead of `size`, and `PoolOptions.requireConnection` carries R14's choice, defaulting
+as decided. Existing call sites are untouched.
 
 R12 is checked by a test that was confirmed to catch a pool dropping a unit of capacity per failed
 open, reporting it as such. That test has an unavoidable wart, recorded alongside it: when it
@@ -356,12 +356,15 @@ fails, the run hangs afterwards, because establishing that borrows no longer blo
 borrows that would block if they did, and a blocked borrow keeps the process alive. The failure is
 reported before the hang.
 
-R9 is met for creation and not for steady state. Capacity is recycled in the order it is returned,
-so a pool of eight serving one caller at a time still opens eight connections over its first eight
-borrows; only the ninth onwards reuses. Fixing that means handing back the most recently used unit
-rather than the least, which the FIFO channel the pool is built on cannot express. Recorded rather
-than fixed, because it is a `should`, and because the change is a redesign of the structure that
-carries the concurrency bound.
+R9 is met in both halves. Cost scales with concurrent demand rather than capacity: a pool of eight
+serving one caller at a time opens one connection, not eight. Two separate things deliver that, and
+conflating them cost a wrong claim in a doc comment before a test caught it. Separating permits
+from connections is what stops sequential borrows walking through the whole capacity. Taking the
+most recently returned connection rather than the least is what makes a pool settle back onto one
+after a burst has forced it to open several, instead of keeping all of them in rotation
+permanently. The first is what R9 asks for; the second decides whether a pool ever recovers from
+its own high-water mark, which R9 does not ask about and which matters just as much to a server
+counting connections.
 
 Demonstrations 6 and 8 are each half exercised. The half that matters, that capacity is not lost
 and the pool does not deadlock, is tested. The half that needs the database to stop and then start

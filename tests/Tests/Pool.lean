@@ -119,6 +119,47 @@ def testPoolCreatedWithoutConnecting : TestM Unit :=
     recordSuccess s!"pool created without connecting served {size + 2} borrowers"
 
 /--
+A pool that has been busy and then quietens settles back onto one connection, rather than
+continuing to rotate through everything it opened at its peak. Returning the least recently used
+connection instead would keep every connection in service indefinitely, so a burst of traffic would
+permanently commit the pool, and the server, to its high-water mark.
+
+Backend process ids identify the connections. The concurrent phase exists to put more than one
+connection in the pool, without which the check that follows would hold whatever the order.
+-/
+def testPoolSettlesOntoOneConnection : TestM Unit :=
+  withHeader "=== Testing a pool settles back onto one connection ===" <| guardTest do
+    let size := 4
+    let pool ← Pool.create "" size
+
+    let tasks ← (List.range size).toArray.mapM fun _ =>
+      IO.asTask <| pool.withConn fun conn => do
+        let pid ← backendPid conn
+        IO.sleep 20
+        pure pid
+    let mut opened : Array String := #[]
+    for task in tasks do
+      match ← IO.wait task with
+      | .ok pid => opened := opened.push pid
+      | .error e => throw e
+    let some firstOpened := opened[0]?
+      | throw <| IO.userError "expected the concurrent phase to borrow at least once"
+    unless opened.any (· != firstOpened) do
+      throw <| IO.userError
+        "concurrent borrows all landed on one connection, so the pool never held more than one and the check below would prove nothing"
+
+    let borrows := size * 2
+    let mut pids : Array String := #[]
+    for _ in [:borrows] do
+      pids := pids.push (← pool.withConn backendPid)
+    let some first := pids[0]?
+      | throw <| IO.userError "expected at least one borrow"
+    unless pids.all (· == first) do
+      throw <| IO.userError
+        s!"expected {borrows} non-overlapping borrows to settle on one connection, saw backends {pids}"
+    recordSuccess s!"a pool of {size} settled back onto a single connection after being busy"
+
+/--
 Creating a pool requires a connection unless the caller says otherwise. A connection string that
 can never work fails at startup by default, where a deployment can notice; an application that has
 to survive starting while its database is unreachable opts out, and meets the failure at its first
