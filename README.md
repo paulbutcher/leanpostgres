@@ -95,6 +95,26 @@ separate parameter array rather than interpolated into the SQL string,
 there's no client-side SQL escaping/quoting to get right; it's handled
 entirely server-side.
 
+## What a program links
+
+The library is built on the module system, and the frontend it needs to
+elaborate `deriving Row`, `ResultColumn`, `QueryParam`, `ToBinary` and
+`FromBinary` is behind `meta import`. A program that imports `Postgres`
+and derives every one of them links none of the Lean package, provided
+the program is itself a `module`; a file without the `module` header
+initializes its imports wholesale, meta code included, and pulls the
+frontend in with them.
+
+JSON is [lean-json](https://github.com/paulbutcher/lean-json), whose
+`Json` depends on `Init` and `Std` alone, rather than `Lean.Data.Json`.
+It is a distinct type: object fields keep the order they were given in
+and duplicate names are representable, where the `Lean` one sorts and
+merges them.
+
+`scripts/check-linkage.sh` builds `linkage/`, a consumer package that
+exercises all of the above, and fails if any of the Lean package
+reached the executable.
+
 ## Development
 
 To build the library, use the standard Lake build command from the

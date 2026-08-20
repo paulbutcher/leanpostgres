@@ -9,7 +9,7 @@ public import Postgres.LowLevel
 public import Postgres.Pool
 public import Postgres.QueryParam
 public import Postgres.QueryResult
-public import Postgres.QueryResult.Deriving
+public meta import Postgres.QueryResult.Deriving
 public import Postgres.Blob
 public import Postgres.Interpolation
 public import Postgres.Numeric

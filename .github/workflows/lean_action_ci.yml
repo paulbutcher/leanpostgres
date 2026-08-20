@@ -39,3 +39,5 @@ jobs:
       - name: Install libpq
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev pkg-config
       - uses: leanprover/lean-action@v1
+      - name: Check that a consumer does not link the Lean package
+        run: ./scripts/check-linkage.sh

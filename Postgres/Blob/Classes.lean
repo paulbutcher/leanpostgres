@@ -3,9 +3,7 @@ Copyright (c) 2026 Paul Butcher. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 -/
 module
-public import Lean.Data.Json.Basic
-public import Lean.Data.Json.FromToJson
-import Lean.Elab.Command
+public import Json
 
 set_option linter.missingDocs true
 set_option doc.verso true
@@ -360,65 +358,69 @@ public instance [ToBinary α] : ToBinary (List α) := .via List.toArray
 
 public instance [FromBinary α] : FromBinary (List α) := .via Array.toList
 
-public instance : ToBinary Lean.JsonNumber := .via fun | { mantissa, exponent } => (mantissa, exponent)
+public instance : ToBinary Json.Number := .via fun | { mantissa, exponent } => (mantissa, exponent)
 
-public instance : FromBinary Lean.JsonNumber := .via fun (mantissa, exponent) => { mantissa, exponent }
+public instance : FromBinary Json.Number := .via fun (mantissa, exponent) => { mantissa, exponent }
 
--- `partial` is unavoidable here: `Json`'s recursive occurrences are nested inside `Array` and
--- `RBNode`, so `go` reaches them only through those types' own serializers, via the local instance
--- below. Neither the structural nor the well-founded checker can see a decreasing argument through
--- that indirection.
-public partial instance : ToBinary Lean.Json where
-  serializer := go
+-- `Json.Alg.fold` keeps the containers it is part way through on the heap, so a value nested a
+-- million deep costs memory here rather than the C stack.
+public instance : ToBinary Json where
+  serializer := Json.Alg.fold alg
 where
-  go
-    | .null, b => b.push 0
-    | .bool true, b => b.push 1
-    | .bool false, b => b.push 2
-    | .num n, b => b.push 3 |> ToBinary.serializer n
-    | .str s, b => b.push 4 |> ToBinary.serializer s
-    | .arr xs, b =>
-      have : ToBinary Lean.Json := ⟨go⟩
-      b.push 5 |> ToBinary.serializer xs
-    | .obj xs, b =>
-      have : ToBinary Lean.Json := ⟨go⟩
-      b.push 6 |> ToBinary.serializer xs.toArray
+  alg : Json.Alg (ByteArray → ByteArray) := {
+    null := (·.push 0)
+    bool := fun
+      | true => (·.push 1)
+      | false => (·.push 2)
+    num := fun n b => b.push 3 |> ToBinary.serializer n
+    str := fun s b => b.push 4 |> ToBinary.serializer s
+    arr := fun elems b =>
+      elems.foldl (init := b.push 5 |> ToBinary.serializer elems.size) fun b append => append b
+    obj := fun fields b =>
+      fields.foldl (init := b.push 6 |> ToBinary.serializer fields.size) fun b (name, append) =>
+        append (ToBinary.serializer name b)
+  }
 
--- `partial` for the same reason as `ToBinary Lean.Json` above; here the cursor advancing on every
--- read is what actually guarantees termination, which is not visible to either checker.
-public partial instance : FromBinary Lean.Json where
-  deserializer := go
+-- `go`'s argument bounds the nesting it will descend into. Every level reads at least its own tag
+-- byte, so the size of the data is fuel enough for anything a serializer produced, and nothing
+-- well-formed is refused for want of it.
+public instance : FromBinary Json where
+  deserializer state := go state.data.size state
 where
-  go := do
-    match (← .byte) with
-    | 0 => return .null
-    | 1 => return .bool true
-    | 2 => return .bool false
-    | 3 => .num <$> FromBinary.deserializer
-    | 4 => .str <$> FromBinary.deserializer
-    | 5 =>
-      have : FromBinary Lean.Json := ⟨go⟩
-      .arr <$> FromBinary.deserializer
-    | 6 =>
-      have : FromBinary Lean.Json := ⟨go⟩
-      let contents : Array (String × Lean.Json) ← FromBinary.deserializer
-      return .obj <| .ofArray contents
-    | other => throw s!"Expected tag 0-6 for `Json`, got {other}"
+  go : Nat → Deserializer Json
+    | 0 => throw "`Json` nested deeper than the data can represent"
+    | fuel + 1 => do
+      match (← .byte) with
+      | 0 => return .null
+      | 1 => return .bool true
+      | 2 => return .bool false
+      | 3 => .num <$> FromBinary.deserializer
+      | 4 => .str <$> FromBinary.deserializer
+      | 5 =>
+        let size : Nat ← FromBinary.deserializer
+        .arr <$> size.foldM (init := Array.emptyWithCapacity size) fun _ _ elems =>
+          elems.push <$> go fuel
+      | 6 =>
+        let size : Nat ← FromBinary.deserializer
+        .obj <$> size.foldM (init := Array.emptyWithCapacity size) fun _ _ fields => do
+          let name : String ← FromBinary.deserializer
+          return fields.push (name, ← go fuel)
+      | other => throw s!"Expected tag 0-6 for `Json`, got {other}"
 
 /--
 Creates a {name}`ToBinary` instance that first converts a value to JSON and then serializes the
 result. This serialization is not as a JSON string, which can avoid the overhead of string escaping
 in certain specialized circumstances.
 -/
-@[implicit_reducible] public def ToBinary.viaJson [Lean.ToJson α] : ToBinary α := via Lean.ToJson.toJson
+@[implicit_reducible] public def ToBinary.viaJson [Json.ToJson α] : ToBinary α := via Json.toJson
 
 /--
 Creates a {name}`FromBinary` instance that first deserializes a JSON value and then attempts to
 convert it to a value of type {name}`α`.
 -/
-@[implicit_reducible] public def FromBinary.viaJson [Lean.FromJson α] : FromBinary α where
+@[implicit_reducible] public def FromBinary.viaJson [Json.FromJson α] : FromBinary α where
   deserializer := do
     let json ← FromBinary.deserializer
-    Lean.FromJson.fromJson? json
+    Json.fromJson? json
 
 end Postgres.Blob

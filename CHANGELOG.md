@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.0] - 2026-08-20
+
+Switch to lean-json instead of Lean.Data.Json.
+
 ## [0.5.0] - 2026-08-17
 
 - Pools replace connections the database has closed

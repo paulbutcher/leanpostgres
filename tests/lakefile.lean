@@ -7,7 +7,7 @@ open Lake DSL
 
 require leanpostgres from ".."
 require plausible from git
-  "https://github.com/leanprover-community/plausible" @ "v4.32.0"
+  "https://github.com/leanprover-community/plausible" @ "v4.33.0"
 
 package «leanpostgres-tests» where
   leanOptions := #[⟨`experimental.module, true⟩]

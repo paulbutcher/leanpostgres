@@ -10,6 +10,7 @@ import Tests.CoreTypes
 import Tests.Transactions
 import Tests.RowDeriving
 import Tests.BlobDeriving
+import Tests.BlobJson
 import Tests.DomainTypes
 import Tests.Metadata
 import Tests.Pool
@@ -53,6 +54,8 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testNonEmptyStringQueryParamDeriving conn
     testBlobDeriving
     testBlobDerivingProperties
+    testBlobJson
+    testBlobJsonProperty
     testNumericRoundTrip conn
     testUuidRoundTrip conn
     testDateRoundTrip conn
