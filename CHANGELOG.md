@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.6.1] - 2026-08-20
+
+`Row`, `ResultColumn`, and `QueryParam` can be derived from a `module`.
+
 ## [0.6.0] - 2026-08-20
 
 Switch to lean-json instead of Lean.Data.Json.

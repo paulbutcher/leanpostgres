@@ -130,7 +130,7 @@ private meta def mkRowReadBody (indVal : InductiveVal) : TermElabM Term := do
   return result
 
 /--
-Generates a private definition that will be used as the {name}`Row.read` implementation.
+Generates the auxiliary function definition used as the {name}`Row.read` implementation.
 -/
 private meta def mkRowAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM Command := do
   let auxFunName := ctx.auxFunNames[i]!
@@ -143,7 +143,7 @@ private meta def mkRowAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM
   let body ← mkRowReadBody indVal
 
   -- Create the function definition
-  `(private def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : RowReader $(header.targetType) := $body)
+  `(@[no_expose] def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : RowReader $(header.targetType) := $body)
 
 /--
 Creates instance commands for {name}`Row`. This is a custom version of {name}`Elab.Deriving.mkInstanceCmds`
@@ -205,7 +205,7 @@ types (trivial wrappers).
 -/
 
 /--
-Generates a private definition that will be used as the {name}`ResultColumn.get` implementation.
+Generates the auxiliary function definition used as the {name}`ResultColumn.get` implementation.
 -/
 private meta def mkResultColumnAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM Command := do
   let auxFunName := ctx.auxFunNames[i]!
@@ -215,7 +215,7 @@ private meta def mkResultColumnAuxFunction (ctx : Deriving.Context) (i : Nat) : 
 
   let body ← `(fun stmt col => $(mkCIdent ctorName) <$> ResultColumn.get stmt col)
 
-  `(private def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Stmt → Int32 → IO $(header.targetType) := $body)
+  `(@[no_expose] def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Stmt → Int32 → IO $(header.targetType) := $body)
 
 /--
 The main deriving handler for the {name}`ResultColumn` type class.
@@ -255,7 +255,7 @@ deriving for types like subtypes.
 -/
 
 /--
-Generates a private definition that will be used as the {name}`QueryParam.bind` implementation.
+Generates the auxiliary function definition used as the {name}`QueryParam.bind` implementation.
 -/
 private meta def mkQueryParamAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM Command := do
   let auxFunName := ctx.auxFunNames[i]!
@@ -277,7 +277,7 @@ private meta def mkQueryParamAuxFunction (ctx : Deriving.Context) (i : Nat) : Te
   let pattern ← `(⟨$patternElems,*⟩)
   let body ← `(fun stmt idx $pattern => QueryParam.bind stmt idx x)
 
-  `(private def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Stmt → Int32 → $(header.targetType) → IO Unit := $body)
+  `(@[no_expose] def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Stmt → Int32 → $(header.targetType) → IO Unit := $body)
 
 /--
 The main deriving handler for the {name}`QueryParam` type class.
