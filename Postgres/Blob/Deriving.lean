@@ -16,6 +16,15 @@ set_option linter.missingDocs true
 open Lean Elab Meta Parser Term Command
 open Elab.Deriving
 
+/-!
+Neither generated function is {lit}`partial`. A serializer recurses on the value, which is
+structural. A deserializer recurses on the data, where nothing tells Lean that a field is smaller
+than the value it came out of, so a recursive type's deserializer takes a count instead, which the
+instance seeds from the bytes still unread. That count is never what stops it: every level reads at
+least one byte, so it cannot run out before the data does. A type that cannot recurse carries no
+count.
+-/
+
 /-! # Helpers -/
 
 /--
@@ -42,13 +51,6 @@ private meta def mkHeader (constraintClass : Name) (indVal : InductiveVal) : Ter
     targetNames := #[]
     targetType := targetType
   }
-
-/--
-Returns the number of explicit fields for a constructor, excluding the inductive type's parameters.
--/
-private meta def getCtorFieldCount (ctorName : Name) : MetaM Nat := do
-  let ctorInfo ← getConstInfoCtor ctorName
-  return ctorInfo.numFields
 
 /--
 Checks whether any constructor field's type depends on a previous field. Returns {name}`true` if
@@ -86,7 +88,69 @@ Returns the tag type name: {name}`UInt8` if ≤ 256 constructors, otherwise {nam
 private meta def tagTypeName (numCtors : Nat) : Name :=
   if numCtors ≤ 256 then ``UInt8 else ``Nat
 
+/--
+Runs {name}`k` with the types of a constructor's explicit fields, under the local context that
+binds them.
+-/
+private meta def withFieldTypes (ctorName : Name) (k : Array Expr → TermElabM α) : TermElabM α := do
+  let ctorInfo ← getConstInfoCtor ctorName
+  forallTelescopeReducing ctorInfo.type fun args _ => do
+    k (← args[ctorInfo.numParams:].toArray.mapM fun arg => inferType arg)
+
+/--
+Whether a type mentions the inductive being derived.
+-/
+private meta def mentions (indName : Name) (type : Expr) : Bool :=
+  (type.find? (·.isConstOf indName)).isSome
+
+/--
+The element type, for a one-argument application of {name}`container`.
+-/
+private meta def containerArg? (container : Name) (type : Expr) : Option Expr :=
+  if type.isAppOfArity container 1 then type.getAppArgs[0]? else none
+
+/--
+Reports a field whose type mentions the one being derived in a shape with no code to generate.
+-/
+private meta def unsupportedField (indName : Name) (type : Expr) : TermElabM α :=
+  throwError "cannot derive a binary codec for {indName}: no rule covers a field of type {type}\n\
+Recursion is generated through a field of type {indName} itself, or of `Array`, `List` or \
+`Option` of it; anything else has to be written by hand."
+
 /-! # ToBinary Generation -/
+
+/--
+The step that appends one field to the bytes accumulated so far: the function being defined where
+the field recurses, the {name}`ToBinary` instance otherwise.
+-/
+private meta def serializeField (indName : Name) (aux : Ident) (x : Ident) (type : Expr) :
+    TermElabM Term := do
+  if type.isAppOf indName then
+    `($aux $x)
+  else if let some inner := containerArg? ``Array type then
+    if inner.isAppOf indName then
+      -- The mapped array is bound rather than folded over in place: `Array.foldl` defaults its
+      -- `stop` to `as.size`, which would repeat the mapped array, and a second occurrence of the
+      -- recursive call is more than the termination checker can eliminate.
+      `(fun b => let parts := ($x).map $aux;
+                 parts.foldl (fun s g => g s) (ToBinary.serializer ($x).size b))
+    else viaInstance type
+  else if let some inner := containerArg? ``List type then
+    if inner.isAppOf indName then
+      `(fun b => let parts := ($x).map $aux;
+                 parts.foldl (fun s g => g s) (ToBinary.serializer ($x).length b))
+    else viaInstance type
+  else if let some inner := containerArg? ``Option type then
+    if inner.isAppOf indName then
+      -- A `match` rather than `Option.map`: a recursive call passed as an argument defeats the
+      -- structural recursion this definition relies on.
+      `(fun b => match $x:term with | none => b.push 0 | some v => $aux v (b.push 1))
+    else viaInstance type
+  else
+    viaInstance type
+where
+  viaInstance (type : Expr) : TermElabM Term := do
+    if mentions indName type then unsupportedField indName type else `(ToBinary.serializer $x)
 
 /--
 Generates the {name}`ToBinary` body for a zero-constructor type.
@@ -97,37 +161,36 @@ private meta def mkToBinaryZeroCtorBody : TermElabM Term := `(nofun)
 Generates the {name}`ToBinary` body for a single-constructor type. No tag is emitted; fields are serialized
 sequentially.
 -/
-private meta def mkToBinarySingleCtorBody (indVal : InductiveVal) : TermElabM Term := do
-  let ctorName := indVal.ctors[0]!
-  let numFields ← getCtorFieldCount ctorName
-  let fieldNames : Array Name := (Array.range numFields).map fun i => Name.mkSimple s!"f_{i}"
-  let patternElems : Array (TSyntax `term) := fieldNames.map fun n => mkIdent n
-  let pattern ← `(⟨$patternElems,*⟩)
-  let acc : TSyntax `term ← `(acc)
-  let mut result : TSyntax `term := acc
-  for name in fieldNames do
-    result ← `($result |> ToBinary.serializer $(mkIdent name))
-  `(fun | $pattern, acc => $result)
+private meta def mkToBinarySingleCtorBody (indVal : InductiveVal) (aux : Ident) : TermElabM Term :=
+  withFieldTypes indVal.ctors[0]! fun types => do
+    let fieldNames : Array Name := (Array.range types.size).map fun i => Name.mkSimple s!"f_{i}"
+    let patternElems : Array (TSyntax `term) := fieldNames.map fun n => mkIdent n
+    let pattern ← `(⟨$patternElems,*⟩)
+    let mut result : TSyntax `term ← `(acc)
+    for i in [:types.size] do
+      let step ← serializeField indVal.name aux (mkIdent fieldNames[i]!) types[i]!
+      result ← `($result |> $step)
+    `(fun | $pattern, acc => $result)
 
 /--
 Generates the ToBinary body for a multi-constructor type. Each constructor gets a sequential tag
 ({name}`UInt8` or {name}`Nat`), then fields are serialized.
 -/
-private meta def mkToBinaryMultiCtorBody (indVal : InductiveVal) : TermElabM Term := do
+private meta def mkToBinaryMultiCtorBody (indVal : InductiveVal) (aux : Ident) : TermElabM Term := do
   let tagType := tagTypeName indVal.ctors.length
   let mut arms : Array (TSyntax ``matchAlt) := #[]
   for ctorIdx in [:indVal.ctors.length] do
     let ctorName := indVal.ctors[ctorIdx]!
-    let numFields ← getCtorFieldCount ctorName
-    let fieldNames : Array Name := (Array.range numFields).map fun i => Name.mkSimple s!"f_{i}"
-    let patternElems : Array (TSyntax `term) := fieldNames.map fun n => mkIdent n
-    let pattern ← `($(mkCIdent ctorName) $patternElems*)
-    let tagLit ← `(($(Syntax.mkNumLit (toString ctorIdx)) : $(mkIdent tagType)))
-    let acc : TSyntax `term ← `(acc)
-    let mut result ← `($acc |> ToBinary.serializer $tagLit)
-    for name in fieldNames do
-      result ← `($result |> ToBinary.serializer $(mkIdent name))
-    let arm ← `(matchAltExpr| | $pattern, acc => $result)
+    let arm ← withFieldTypes ctorName fun types => do
+      let fieldNames : Array Name := (Array.range types.size).map fun i => Name.mkSimple s!"f_{i}"
+      let patternElems : Array (TSyntax `term) := fieldNames.map fun n => mkIdent n
+      let pattern ← `($(mkCIdent ctorName) $patternElems*)
+      let tagLit ← `(($(Syntax.mkNumLit (toString ctorIdx)) : $(mkIdent tagType)))
+      let mut result ← `(acc |> ToBinary.serializer $tagLit)
+      for i in [:types.size] do
+        let step ← serializeField indVal.name aux (mkIdent fieldNames[i]!) types[i]!
+        result ← `($result |> $step)
+      `(matchAltExpr| | $pattern, acc => $result)
     arms := arms.push arm
   `(fun $arms:matchAlt*)
 
@@ -135,25 +198,17 @@ private meta def mkToBinaryMultiCtorBody (indVal : InductiveVal) : TermElabM Ter
 Generates the auxiliary function definition for {name}`ToBinary`.
 -/
 private meta def mkToBinaryAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM Command := do
-  let auxFunName := ctx.auxFunNames[i]!
+  let aux := Lean.mkIdent ctx.auxFunNames[i]!
   let indVal := ctx.typeInfos[i]!
   let header ← mkHeader ``ToBinary indVal
   let targetType := header.targetType
 
   let body ← match indVal.ctors.length with
     | 0 => mkToBinaryZeroCtorBody
-    | 1 => mkToBinarySingleCtorBody indVal
-    | _ => mkToBinaryMultiCtorBody indVal
+    | 1 => mkToBinarySingleCtorBody indVal aux
+    | _ => mkToBinaryMultiCtorBody indVal aux
 
-  -- A recursive type's recursive fields are serialized through the local instance below rather
-  -- than by a direct self-call, so neither termination checker can find a decreasing argument;
-  -- `partial` is the only way to emit a definition that elaborates for every such type.
-  if indVal.isRec then
-    `(@[no_expose] partial def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Serializer $targetType :=
-        have : ToBinary $targetType := ⟨$(Lean.mkIdent auxFunName)⟩
-        $body)
-  else
-    `(@[no_expose] def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Serializer $targetType := $body)
+  `(@[no_expose] def $aux $header.binders:bracketedBinder* : Serializer $targetType := $body)
 
 /--
 Creates instance commands for {name}`ToBinary`.
@@ -209,6 +264,40 @@ private meta def mkCtorLambda (ctorName : Name) (numFields : Nat) : TermElabM Te
 /-! # FromBinary Generation -/
 
 /--
+The deserializer for one field, passing whatever count the enclosing call has left down through
+any recursion.
+-/
+private meta def deserializeField (indName : Name) (aux : Ident) (count : Ident) (type : Expr) :
+    TermElabM Term := do
+  if type.isAppOf indName then
+    `($aux $count)
+  else if let some inner := containerArg? ``Array type then
+    if inner.isAppOf indName then `(Deserializer.arrayOf ($aux $count)) else viaInstance type
+  else if let some inner := containerArg? ``List type then
+    if inner.isAppOf indName then `(Deserializer.listOf ($aux $count)) else viaInstance type
+  else if let some inner := containerArg? ``Option type then
+    if inner.isAppOf indName then `(Deserializer.optionOf ($aux $count)) else viaInstance type
+  else
+    viaInstance type
+where
+  viaInstance (type : Expr) : TermElabM Term := do
+    if mentions indName type then unsupportedField indName type else `(FromBinary.deserializer)
+
+/--
+Reads a constructor's fields in order and applies the constructor to them.
+-/
+private meta def mkCtorRead (indName : Name) (aux : Ident) (count : Ident) (ctorName : Name)
+    (types : Array Expr) : TermElabM Term := do
+  if types.size == 0 then
+    `(pure ($(mkCIdent ctorName) : _))
+  else
+    let ctorFn ← mkCtorLambda ctorName types.size
+    let mut result ← `($ctorFn <$> $(← deserializeField indName aux count types[0]!))
+    for i in [1:types.size] do
+      result ← `($result <*> $(← deserializeField indName aux count types[i]!))
+    return result
+
+/--
 Generates the {name}`FromBinary` body for a zero-constructor (uninhabited) type. The generated
 deserializer immediately throws an error.
 -/
@@ -220,39 +309,26 @@ private meta def mkFromBinaryZeroCtorBody (indVal : InductiveVal) : TermElabM Te
 /--
 Generates the {name}`FromBinary` body for a single-constructor type.
 -/
-private meta def mkFromBinarySingleCtorBody (indVal : InductiveVal) : TermElabM Term := do
-  let ctorName := indVal.ctors[0]!
-  let numFields ← getCtorFieldCount ctorName
-  if numFields == 0 then
-    `(pure ⟨⟩)
-  else
-    let ctorFn ← mkCtorLambda ctorName numFields
-    let mut result ← `($ctorFn <$> FromBinary.deserializer)
-    for _ in [1:numFields] do
-      result ← `($result <*> FromBinary.deserializer)
-    return result
+private meta def mkFromBinarySingleCtorBody (indVal : InductiveVal) (aux : Ident) (count : Ident) :
+    TermElabM Term :=
+  withFieldTypes indVal.ctors[0]! fun types =>
+    if types.size == 0 then `(pure ⟨⟩)
+    else mkCtorRead indVal.name aux count indVal.ctors[0]! types
 
 /--
 Generates the {name}`FromBinary` body for a multi-constructor type. Reads a tag, then dispatches to
 the appropriate constructor.
 -/
-private meta def mkFromBinaryMultiCtorBody (indVal : InductiveVal) : TermElabM Term := do
+private meta def mkFromBinaryMultiCtorBody (indVal : InductiveVal) (aux : Ident) (count : Ident) :
+    TermElabM Term := do
   let numCtors := indVal.ctors.length
   let tagType := tagTypeName numCtors
 
   let mut matchArms : Array (TSyntax ``matchAlt) := #[]
   for ctorIdx in [:numCtors] do
     let ctorName := indVal.ctors[ctorIdx]!
-    let numFields ← getCtorFieldCount ctorName
     let tagLit := Syntax.mkNumLit (toString ctorIdx)
-    let armBody ← if numFields == 0 then
-        `(pure ($(mkCIdent ctorName) : _))
-      else
-        let ctorFn ← mkCtorLambda ctorName numFields
-        let mut result ← `($ctorFn <$> FromBinary.deserializer)
-        for _ in [1:numFields] do
-          result ← `($result <*> FromBinary.deserializer)
-        pure result
+    let armBody ← withFieldTypes ctorName (mkCtorRead indVal.name aux count ctorName)
     let matchArm ← `(matchAltExpr| | $tagLit => $armBody)
     matchArms := matchArms.push matchArm
 
@@ -270,23 +346,25 @@ private meta def mkFromBinaryMultiCtorBody (indVal : InductiveVal) : TermElabM T
 Generates the auxiliary function definition for FromBinary.
 -/
 private meta def mkFromBinaryAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM Command := do
-  let auxFunName := ctx.auxFunNames[i]!
+  let aux := Lean.mkIdent ctx.auxFunNames[i]!
   let indVal := ctx.typeInfos[i]!
   let header ← mkHeader ``FromBinary indVal
   let targetType := header.targetType
+  let count := mkIdent (← mkFreshUserName `count)
 
   let body ← match indVal.ctors.length with
     | 0 => mkFromBinaryZeroCtorBody indVal
-    | 1 => mkFromBinarySingleCtorBody indVal
-    | _ => mkFromBinaryMultiCtorBody indVal
+    | 1 => mkFromBinarySingleCtorBody indVal aux count
+    | _ => mkFromBinaryMultiCtorBody indVal aux count
 
-  -- `partial` for the same reason as in `mkToBinaryAuxFunction`.
   if indVal.isRec then
-    `(@[no_expose] partial def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Deserializer $targetType :=
-        have : FromBinary $targetType := ⟨$(Lean.mkIdent auxFunName)⟩
-        $body)
+    let exhausted := Syntax.mkStrLit s!"`{indVal.name}` nested deeper than the data can represent"
+    `(@[no_expose] def $aux $header.binders:bracketedBinder* ($count : Nat) : Deserializer $targetType :=
+        match $count:ident with
+        | 0 => throw $exhausted
+        | $count:ident + 1 => $body)
   else
-    `(@[no_expose] def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : Deserializer $targetType := $body)
+    `(@[no_expose] def $aux $header.binders:bracketedBinder* : Deserializer $targetType := $body)
 
 /--
 Creates instance commands for {name}`FromBinary`.
@@ -296,14 +374,16 @@ private meta def mkFromBinaryInstanceCmds (ctx : Deriving.Context) (typeNames : 
   for i in [:ctx.typeInfos.size] do
     let indVal := ctx.typeInfos[i]!
     if typeNames.contains indVal.name then
-      let auxFunName := ctx.auxFunNames[i]!
+      let aux := Lean.mkIdent ctx.auxFunNames[i]!
       let argNames ← mkInductArgNames indVal
       let binders ← mkImplicitBinders argNames
       let binders := binders ++ (← mkInstImplicitBinders ``FromBinary indVal argNames)
       let binders : TSyntaxArray `Lean.Parser.Term.implicitBinder := binders.map (⟨·⟩)
       let indType ← mkInductiveApp indVal argNames
       let type ← `(FromBinary $indType)
-      let val ← `(⟨$(Lean.mkIdent auxFunName)⟩)
+      -- The unread bytes bound how deep the data can go, so they are count enough for anything a
+      -- serializer produced.
+      let val ← if indVal.isRec then `(⟨fun s => $aux (s.data.size - s.cursor) s⟩) else `(⟨$aux⟩)
       let instCmd ← `(instance $binders:implicitBinder* : $type := $val)
       instances := instances.push instCmd
   return instances

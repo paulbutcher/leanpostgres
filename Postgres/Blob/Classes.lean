@@ -284,12 +284,18 @@ public instance [ToBinary α] : ToBinary (Option α) where
     | some x =>
       fun b => b |>.push 1 |> ToBinary.serializer x
 
+/--
+Deserializes an optional value, reading the value with {name}`d` rather than with a
+{name}`FromBinary` instance.
+-/
+public def Deserializer.optionOf (d : Deserializer α) : Deserializer (Option α) := do
+  match (← .byte) with
+  | 0 => return none
+  | 1 => some <$> d
+  | other => throw s!"Expected 0 or 1 for `Option`, got {other}"
+
 public instance [FromBinary α] : FromBinary (Option α) where
-  deserializer := do
-    match (← .byte) with
-    | 0 => return none
-    | 1 => some <$> FromBinary.deserializer
-    | other => throw s!"Expected 0 or 1 for `Option`, got {other}"
+  deserializer := Deserializer.optionOf FromBinary.deserializer
 
 public instance [ToBinary α] {p : α → Prop} : ToBinary (Subtype p) := .via Subtype.val
 
@@ -349,14 +355,28 @@ public instance [ToBinary α] : ToBinary (Array α) where
     arr.size.fold (init := ToBinary.serializer arr.size b) fun i h =>
       ToBinary.serializer arr[i]
 
+/--
+Deserializes an array, reading its elements with {name}`d` rather than with a {name}`FromBinary`
+instance.
+-/
+public def Deserializer.arrayOf (d : Deserializer α) : Deserializer (Array α) := do
+  let size : Nat ← FromBinary.deserializer
+  size.foldM (init := Array.emptyWithCapacity size) fun _ _ arr => arr.push <$> d
+
+/--
+Deserializes a list, reading its elements with {name}`d` rather than with a {name}`FromBinary`
+instance.
+-/
+public def Deserializer.listOf (d : Deserializer α) : Deserializer (List α) :=
+  Array.toList <$> Deserializer.arrayOf d
+
 public instance [FromBinary α] : FromBinary (Array α) where
-  deserializer := do
-    let size : Nat ← FromBinary.deserializer
-    size.foldM (init := Array.emptyWithCapacity size) fun _ _ arr => arr.push <$> FromBinary.deserializer
+  deserializer := Deserializer.arrayOf FromBinary.deserializer
 
 public instance [ToBinary α] : ToBinary (List α) := .via List.toArray
 
-public instance [FromBinary α] : FromBinary (List α) := .via Array.toList
+public instance [FromBinary α] : FromBinary (List α) where
+  deserializer := Deserializer.listOf FromBinary.deserializer
 
 public instance : ToBinary Json.Number := .via fun | { mantissa, exponent } => (mantissa, exponent)
 

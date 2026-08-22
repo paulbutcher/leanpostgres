@@ -72,6 +72,34 @@ def Tree.shrink : Tree → List Tree
 instance : Shrinkable Tree where
   shrink := Tree.shrink
 
+inductive Forest where
+  | node (label : Nat) (kids : Array Forest) (sibs : List Forest) (next : Option Forest)
+deriving BEq, Repr, ToBinary, FromBinary
+
+/--
+Recursion through `Array`, `List` and `Option`, the shapes the handlers generate alongside a
+direct self-reference. The counts bound each level rather than the whole value, so shrinking the
+fuel by a third per level keeps the number of nodes linear in the size parameter, as in
+`Tree.arbitraryGo`.
+-/
+def Forest.arbitraryGo : Nat → Gen Forest
+  | 0 => (Forest.node · #[] [] none) <$> Arbitrary.arbitrary
+  | n + 1 => do
+    let label ← Arbitrary.arbitrary
+    let kidCount := (← Arbitrary.arbitrary : Nat) % 3
+    let kids ← (Array.range kidCount).mapM fun _ => Forest.arbitraryGo (n / 3)
+    let sibCount := (← Arbitrary.arbitrary : Nat) % 3
+    let sibs ← (List.range sibCount).mapM fun _ => Forest.arbitraryGo (n / 3)
+    let next ← if (← Arbitrary.arbitrary : Bool) then some <$> Forest.arbitraryGo (n / 3)
+               else pure none
+    return .node label kids sibs next
+
+instance : Arbitrary Forest where
+  arbitrary := Gen.sized Forest.arbitraryGo
+
+instance : Shrinkable Forest where
+  shrink | .node _ kids sibs next => kids.toList ++ sibs ++ next.toList
+
 /-- error: None of the deriving handlers for class `ToBinary` applied to `ProofField` -/
 #guard_msgs in
 structure ProofField where
@@ -84,6 +112,24 @@ deriving ToBinary
 structure ProofField2 where
   val : Nat
   pos : val > 0
+deriving FromBinary
+
+/--
+error: cannot derive a binary codec for Paired: no rule covers a field of type Nat × Paired
+Recursion is generated through a field of type Paired itself, or of `Array`, `List` or `Option` of it; anything else has to be written by hand.
+-/
+#guard_msgs in
+inductive Paired where
+  | mk (pair : Nat × Paired)
+deriving ToBinary
+
+/--
+error: cannot derive a binary codec for Paired2: no rule covers a field of type Nat × Paired2
+Recursion is generated through a field of type Paired2 itself, or of `Array`, `List` or `Option` of it; anything else has to be written by hand.
+-/
+#guard_msgs in
+inductive Paired2 where
+  | mk (pair : Nat × Paired2)
 deriving FromBinary
 
 inductive NoConstructors
@@ -105,7 +151,10 @@ def testBlobDeriving : TestM Unit :=
       roundTrips (Msg.flagged true "hi"), roundTrips (Msg.plain "hi"),
       roundTrips (Cmd.exec (some 3) "go"), roundTrips (Cmd.exec none "go"), roundTrips Cmd.noop,
       roundTrips (Box.mk (5 : Nat)), roundTrips (Box.mk "hi"),
-      roundTrips (Tree.node (.leaf 1) (.node (.leaf 2) (.leaf 3)))
+      roundTrips (Tree.node (.leaf 1) (.node (.leaf 2) (.leaf 3))),
+      roundTrips (Forest.node 1 #[] [] none),
+      roundTrips (Forest.node 1 #[.node 2 #[] [] none] [.node 3 #[] [] none]
+        (some (.node 4 #[.node 5 #[] [] none] [] none)))
     ]
     if !checks.all id then
       throw <| IO.userError s!"expected every Blob deriving round trip to succeed, got {checks}"
@@ -135,16 +184,14 @@ def checkRoundTripProperty (α : Type) [ToBinary α] [FromBinary α] [BEq α] [R
 /--
 Property-based counterpart to `testBlobDeriving`: runs `Testable.checkIO` over each fixture type
 instead of the hand-picked examples above, sampling a wide, automatically-generated value space
-(large `Nat`s, empty/long/Unicode strings, deeply nested `Tree`s) with automatic shrinking of any
-counter-example found.
+(large `Nat`s, empty/long/Unicode strings, deeply nested `Tree`s and `Forest`s) with automatic
+shrinking of any counter-example found.
 
-Properties rather than theorems, despite this being a wire format, for two reasons. The
-serializers under test are generated per type by a deriving handler, so there is no single fixed
-function to state a theorem about; the claim would have to be re-proved for each fixture, and for
-recursive types like `Tree` the generated definition is `partial` and so carries no equation
-lemmas to reason from. Underneath that, the round trip bottoms out in `ByteArray` primitives the
-kernel will not reduce, which blocks `decide` for the same reason described in
-`Tests.CodecProperties`.
+Properties rather than theorems, despite this being a wire format. The serializers under test are
+generated per type by a deriving handler, so there is no single fixed function to state a theorem
+about; the claim would have to be re-proved for each fixture. Underneath that, the round trip
+bottoms out in `ByteArray` primitives the kernel will not reduce, which blocks `decide` for the
+same reason described in `Tests.CodecProperties`.
 -/
 def testBlobDerivingProperties : TestM Unit :=
   withHeader "=== Testing Blob ToBinary/FromBinary deriving (property-based) ===" <| guardTest do
@@ -156,3 +203,4 @@ def testBlobDerivingProperties : TestM Unit :=
     checkRoundTripProperty (Box Nat) "Box Nat"
     checkRoundTripProperty (Box String) "Box String"
     checkRoundTripProperty Tree "Tree"
+    checkRoundTripProperty Forest "Forest"
