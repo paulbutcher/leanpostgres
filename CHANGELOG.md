@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.0] - 2026-08-22
+
+Get rid of a few partial functions
+
 ## [0.6.1] - 2026-08-20
 
 `Row`, `ResultColumn`, and `QueryParam` can be derived from a `module`.
