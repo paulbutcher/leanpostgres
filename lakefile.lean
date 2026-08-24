@@ -6,7 +6,7 @@ import Lake
 open Lake DSL System
 
 package leanpostgres where
-  version := v!"0.7.0"
+  version := v!"0.7.1"
   license := "Apache-2.0"
   leanOptions := #[⟨`experimental.module, true⟩]
   builtinLint := true

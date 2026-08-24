@@ -149,3 +149,31 @@ def testUniqueViolationSqlstate (conn : Conn) : TestM Unit :=
         if pgErr.sqlstate != "23505" then
           throw <| IO.userError s!"expected SQLSTATE 23505, got: {pgErr}"
         recordSuccess s!"unique violation correctly surfaced SQLSTATE 23505: {pgErr}"
+
+/--
+Every index from 1 to `paramCount` round-trips, including the last one.
+
+The parameter buffer is sized from `paramCount` at `prepare` time and indexed by `bind*` after a
+range check against `paramCount` again; the two only agree because nothing resizes the buffer.
+Should they ever diverge, an out-of-range bind is dropped rather than rejected, and the parameter
+silently stays `NULL`, which is what this checks for.
+-/
+def testEveryParameterIndexBinds (conn : Conn) : TestM Unit :=
+  withHeader "=== Testing every parameter index binds ===" <| withRollback conn <| guardTest do
+    let values := #["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+    let placeholders := String.intercalate ", " (values.zipIdx.toList.map fun (_, i) => s!"${i + 1}::text")
+    let select ← prepare conn s!"SELECT {placeholders}"
+    if select.paramCount != values.size then
+      throw <| IO.userError s!"expected {values.size} parameters, got {select.paramCount}"
+    for (value, i) in values.zipIdx do
+      select.bindText (Int32.ofNat (i + 1)) value
+    unless ← select.step do
+      throw <| IO.userError "expected a row"
+    let mut got : Array String := #[]
+    for (_, i) in values.zipIdx do
+      if ← select.columnIsNull (Int32.ofNat i) then
+        throw <| IO.userError s!"parameter {i + 1} came back NULL: the bind was dropped"
+      got := got.push (← select.columnText (Int32.ofNat i))
+    if got != values then
+      throw <| IO.userError s!"expected {values}, got {got}"
+    recordSuccess s!"all {values.size} parameter indices bound and round-tripped"

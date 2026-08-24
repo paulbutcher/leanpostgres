@@ -33,6 +33,7 @@ def runTests (report : String → IO Unit := IO.println) (verbose : Bool := fals
     testConnIsLiveDetectsTerminatedBackend
     testConnIsLiveNoticesCloseInOneCall
     testStatementLifecycle conn
+    testEveryParameterIndexBinds conn
     testExecScriptMultiStatement conn
     testExecScriptImplicitTransaction conn
     testMalformedStatementError conn

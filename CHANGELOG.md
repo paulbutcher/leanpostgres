@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.1] - 2026-08-24
+
+Binding a parameter no longer relies on a partial function.
+
 ## [0.7.0] - 2026-08-22
 
 Get rid of a few partial functions

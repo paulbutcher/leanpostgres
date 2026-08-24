@@ -120,12 +120,12 @@ private def checkIndex (stmt : Stmt) (index : Int32) : IO Unit :=
 /-- Binds a string to the host parameter at (1-based) {name}`index`. -/
 def bindText (stmt : Stmt) (index : Int32) (value : String) : IO Unit := do
   stmt.checkIndex index
-  stmt.paramsRef.modify (·.set! (index.toNatClampNeg - 1) (some value))
+  stmt.paramsRef.modify (·.setIfInBounds (index.toNatClampNeg - 1) (some value))
 
 /-- Binds {lit}`NULL` to the host parameter at (1-based) {name}`index`. -/
 def bindNull (stmt : Stmt) (index : Int32) : IO Unit := do
   stmt.checkIndex index
-  stmt.paramsRef.modify (·.set! (index.toNatClampNeg - 1) none)
+  stmt.paramsRef.modify (·.setIfInBounds (index.toNatClampNeg - 1) none)
 
 /--
 Executes the statement, advancing to the next row.
