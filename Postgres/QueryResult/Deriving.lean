@@ -28,7 +28,6 @@ excluding the inductive type's parameters.
 -/
 private meta def getCtorFieldCount (ctorName : Name) : MetaM Nat := do
   let ctorInfo ← getConstInfoCtor ctorName
-  -- numFields is the number of fields excluding the inductive type's parameters
   return ctorInfo.numFields
 
 /--
@@ -48,12 +47,10 @@ Returns the total field count and the indices of non-proof fields.
 private meta def analyzeCtorFields (ctorName : Name) : MetaM CtorFieldInfo := do
   let ctorInfo ← getConstInfoCtor ctorName
   forallTelescopeReducing ctorInfo.type fun args _ => do
-    -- Skip the inductive type's parameters
     let fieldArgs := args[ctorInfo.numParams:].toArray
     let mut dataIndices : Array Nat := #[]
     for i in [:fieldArgs.size] do
       let argType ← inferType fieldArgs[i]!
-      -- Check if the type is a Prop, and if so, skip it.
       if !(← isProp argType) then
         dataIndices := dataIndices.push i
     return { totalFields := fieldArgs.size, dataFieldIndices := dataIndices }
@@ -66,11 +63,9 @@ private meta def hasNoFieldDependencies (ctorName : Name) : MetaM Bool := do
   let ctorInfo ← getConstInfoCtor ctorName
   forallTelescopeReducing ctorInfo.type fun args _ => do
     let fieldArgs := args[ctorInfo.numParams:].toArray
-    -- Collect the FVarIds of all previous fields
     let mut prevFVars : Std.HashSet FVarId := {}
     for i in [:fieldArgs.size] do
       let argType ← inferType fieldArgs[i]!
-      -- Check if this field's type mentions any previous field
       if argType.hasAnyFVar (prevFVars.contains ·) then
         return false
       prevFVars := prevFVars.insert fieldArgs[i]!.fvarId!
@@ -122,8 +117,6 @@ private meta def mkRowReadBody (indVal : InductiveVal) : TermElabM Term := do
   let ctorName := indVal.ctors[0]!
   let numFields ← getCtorFieldCount ctorName
 
-  -- Start with: pure Ctor
-  -- Chain: <*> RowReader.field for each field
   let mut result ← `(pure $(mkCIdent ctorName))
   for _ in [:numFields] do
     result ← `($result <*> RowReader.field)
@@ -139,10 +132,8 @@ private meta def mkRowAuxFunction (ctx : Deriving.Context) (i : Nat) : TermElabM
   -- Use ResultColumn constraints since RowReader.field uses ResultColumn
   let header ← mkHeader ``ResultColumn indVal
 
-  -- Generate the body
   let body ← mkRowReadBody indVal
 
-  -- Create the function definition
   `(@[no_expose] def $(Lean.mkIdent auxFunName) $header.binders:bracketedBinder* : RowReader $(header.targetType) := $body)
 
 /--
@@ -158,7 +149,6 @@ private meta def mkRowInstanceCmds (ctx : Deriving.Context) (typeNames : Array N
       let auxFunName := ctx.auxFunNames[i]!
       let argNames ← mkInductArgNames indVal
       let binders ← mkImplicitBinders argNames
-      -- Use ResultColumn instead of Row for instance binders
       let binders := binders ++ (← mkInstImplicitBinders ``ResultColumn indVal argNames)
       let binders : TSyntaxArray `Lean.Parser.Term.implicitBinder := binders.map (⟨·⟩)
       let indType ← mkInductiveApp indVal argNames
@@ -177,11 +167,9 @@ its {name}`ResultColumn` instance.
 -/
 meta def mkRowInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
   let env ← getEnv
-  -- Only handle single-constructor inductives with no field dependencies
   if ← declNames.allM fun name => do
     let some indVal := getInductiveVal? env name | return false
     if !isSingleConstructor indVal then return false
-    -- Check that no field's type depends on a previous field
     liftTermElabM <| hasNoFieldDependencies indVal.ctors[0]!
   then
     let some firstDecl := declNames[0]? | return false
@@ -225,7 +213,6 @@ since {name}`ResultColumn` reads a single column value from a Postgres query.
 -/
 meta def mkResultColumnInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
   let env ← getEnv
-  -- Only handle single-constructor, single-field inductives
   let canHandle ←
     declNames.allM fun name => do
       let some indVal := getInductiveVal? env name | return false
@@ -262,11 +249,9 @@ private meta def mkQueryParamAuxFunction (ctx : Deriving.Context) (i : Nat) : Te
   let indVal := ctx.typeInfos[i]!
   let header ← mkHeader ``QueryParam indVal
 
-  -- Analyze fields to find which is the data field and which are proofs
   let fieldInfo ← analyzeCtorFields indVal.ctors[0]!
   let dataFieldIdx := fieldInfo.dataFieldIndices[0]!
 
-  -- Build pattern: use `x` for the data field, `_` for proof fields
   let mut patternElems : Array (TSyntax `term) := #[]
   for idx in [:fieldInfo.totalFields] do
     if idx == dataFieldIdx then
@@ -288,7 +273,6 @@ subtypes that carry proof obligations.
 -/
 meta def mkQueryParamInstanceHandler (declNames : Array Name) : CommandElabM Bool := do
   let env ← getEnv
-  -- Only handle single-constructor inductives with exactly one non-proof field
   if ← declNames.allM fun name => do
     let some indVal := getInductiveVal? env name | return false
     if !isSingleConstructor indVal then return false

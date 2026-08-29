@@ -2,146 +2,77 @@
 
 ## Overview
 
-This library provides Lean bindings for Postgres, built directly
-against `libpq`. It's designed as a sibling to
-[leansqlite](https://github.com/leanprover/leansqlite); the same
-layering and typeclass-driven design, but a natural Postgres API.
-The library includes a few conveniences on top of the raw C bindings 
-to make working with Postgres more straightforward:
+This library provides Lean bindings for Postgres, built directly against `libpq`. It's designed as a sibling to [leansqlite](https://github.com/leanprover/leansqlite); the same layering and typeclass-driven design, but a natural Postgres API. The library includes a few conveniences on top of the raw C bindings to make working with Postgres more straightforward:
 
  * Interpolated strings that expand to parameterized queries
- * Type classes for serializing binary blobs, converting data to query
-   parameters, and reading columns from results, with `deriving`
-   handlers for all of them
+ * Type classes for serializing binary blobs, converting data to query parameters, and reading columns from results, with `deriving` handlers for all of them
  * Iterators over query result rows
- * Transactions with configurable isolation level, read-only, and
-   deferrable options
- * A fixed-capacity connection pool for sharing connections safely
-   across concurrent tasks, with both blocking and
-   `Std.Async`-cooperative checkout, which replaces connections that
-   have stopped working
- * A full type catalog covering Postgres's `numeric`, `uuid`,
-   `date`/`time`/`timestamp[tz]`, `json`/`jsonb`, and one-dimensional
-   array types, alongside the usual boolean/integer/float/text/bytea
-   set
+ * Transactions with configurable isolation level, read-only, and deferrable options
+ * A fixed-capacity connection pool for sharing connections safely across concurrent tasks, with both blocking and `Std.Async`-cooperative checkout, which replaces connections that have stopped working
+ * A full type catalog covering Postgres's `numeric`, `uuid`, `date`/`time`/`timestamp[tz]`, `json`/`jsonb`, and one-dimensional array types, alongside the usual boolean/integer/float/text/bytea set
 
 ## Key Modules
 
 The library is organized into three layers:
 
-The `Postgres.FFI` module contains the raw foreign function interface
-bindings to `libpq`, at a very low level of abstraction.
+The `Postgres.FFI` module contains the raw foreign function interface bindings to `libpq`, at a very low level of abstraction.
 
-The `Postgres.LowLevel` module wraps the FFI layer with Lean structures
-and types that make the API more ergonomic while still staying close
-to the underlying C interface. It provides structures for database
-connections and statements, transaction options, and result/command
-introspection (column names, command tags, affected-row counts). This
-module is suitable for users who want a straightforward mapping to
-Postgres concepts without additional abstractions.
+The `Postgres.LowLevel` module wraps the FFI layer with Lean structures and types that make the API more ergonomic while still staying close to the underlying C interface. It provides structures for database connections and statements, transaction options, and result/command introspection (column names, command tags, affected-row counts). This module is suitable for users who want a straightforward mapping to Postgres concepts without additional abstractions.
 
-The main `Postgres` module builds on the low-level API to provide
-higher-level conveniences. It includes type classes for binding and
-reading values (with the full type catalog above), a row reader monad
-for extracting query results, iterator support for working with result
-sets, and SQL interpolation syntax for embedding values in queries.
+The main `Postgres` module builds on the low-level API to provide higher-level conveniences. It includes type classes for binding and reading values (with the full type catalog above), a row reader monad for extracting query results, iterator support for working with result sets, and SQL interpolation syntax for embedding values in queries.
 
 ## Connections that stop working
 
-Pooled connections can stop working while idle: a failover, a restart, a
-network that drops idle flows. The pool replaces them as they're handed
-out and never re-runs a statement a caller already issued.
+Pooled connections can stop working while idle: a failover, a restart, a network that drops idle flows. The pool replaces them as they're handed out and never re-runs a statement a caller already issued.
 
-Set these in your connection string. Without them the library cannot
-bound how long a broken connection takes to notice:
+Set these in your connection string. Without them the library cannot bound how long a broken connection takes to notice:
 
- * `tcp_user_timeout` and `keepalives_*`, for a flow the network drops
-   silently
+ * `tcp_user_timeout` and `keepalives_*`, for a flow the network drops silently
  * `connect_timeout`, for a database that is unreachable
 
-`Pool.create` takes `validateAfterIdle`, how long a connection may sit
-idle before it is checked. 30 seconds by default; `none` to disable.
+`Pool.create` takes `validateAfterIdle`, how long a connection may sit idle before it is checked. 30 seconds by default; `none` to disable.
 
-Session state does not survive a borrow. Put server settings in the
-connection string (`options='-c search_path=...'`), where each
-connection picks them up for free. Take advisory locks inside the
-borrow that uses them. `LISTEN` needs its own connection, outside the
-pool.
+Session state does not survive a borrow. Put server settings in the connection string (`options='-c search_path=...'`), where each connection picks them up for free. Take advisory locks inside the borrow that uses them. `LISTEN` needs its own connection, outside the pool.
 
-For state that has to be built on the connection itself, such as
-temporary tables, borrow with `Pool.withBorrowed`, which tells you
-whether the session has been set up yet.
+For state that has to be built on the connection itself, such as temporary tables, borrow with `Pool.withBorrowed`, which tells you whether the session has been set up yet.
 
 ## Postgres Integration
 
-`libpq` is a build-time and runtime prerequisite. You'll need it 
-installed before building:
+`libpq` is a build-time and runtime prerequisite. You'll need it installed before building:
 
  * Debian/Ubuntu: `apt-get install libpq-dev`
  * Fedora/RHEL: `dnf install postgresql-devel`
  * macOS (Homebrew): `brew install libpq`
 
-The build locates `libpq`'s headers and library via `pkg-config` or
-`brew --prefix` by default. If your platform doesn't have
-`pkg-config`, or `brew` or `libpq` lives somewhere it can't find, set
-`LEANPOSTGRES_PQ_INCLUDE`/ `LEANPOSTGRES_PQ_LIB` to the header/library
-directories explicitly.
+The build locates `libpq`'s headers and library via `pkg-config` or `brew --prefix` by default. If your platform doesn't have `pkg-config`, or `brew` or `libpq` lives somewhere it can't find, set `LEANPOSTGRES_PQ_INCLUDE`/`LEANPOSTGRES_PQ_LIB` to the header/library directories explicitly.
 
-All values cross the wire as text in v1 (no binary protocol support);
-`PQexecParams` is always called with null parameter/result format
-arrays, matching what mainstream Postgres client libraries do by
-default. Because parameters are passed through `PQexecParams`'s
-separate parameter array rather than interpolated into the SQL string,
-there's no client-side SQL escaping/quoting to get right; it's handled
-entirely server-side.
+All values cross the wire as text in v1 (no binary protocol support); `PQexecParams` is always called with null parameter/result format arrays, matching what mainstream Postgres client libraries do by default. Because parameters are passed through `PQexecParams`'s separate parameter array rather than interpolated into the SQL string, there's no client-side SQL escaping/quoting to get right; it's handled entirely server-side.
 
 ## What a program links
 
-The library is built on the module system, and the frontend it needs to
-elaborate `deriving Row`, `ResultColumn`, `QueryParam`, `ToBinary` and
-`FromBinary` is behind `meta import`. A program that imports `Postgres`
-and derives every one of them links none of the Lean package, provided
-the program is itself a `module`; a file without the `module` header
-initializes its imports wholesale, meta code included, and pulls the
-frontend in with them.
+The library is built on the module system, and the frontend it needs to elaborate `deriving Row`, `ResultColumn`, `QueryParam`, `ToBinary` and `FromBinary` is behind `meta import`. A program that imports `Postgres` and derives every one of them links none of the Lean package, provided the program is itself a `module`; a file without the `module` header initializes its imports wholesale, meta code included, and pulls the frontend in with them.
 
-JSON is [lean-json](https://github.com/paulbutcher/lean-json), whose
-`Json` depends on `Init` and `Std` alone, rather than `Lean.Data.Json`.
-It is a distinct type: object fields keep the order they were given in
-and duplicate names are representable, where the `Lean` one sorts and
-merges them.
+JSON is [lean-json](https://github.com/paulbutcher/lean-json), whose `Json` depends on `Init` and `Std` alone, rather than `Lean.Data.Json`. It is a distinct type: object fields keep the order they were given in and duplicate names are representable, where the `Lean` one sorts and merges them.
 
-`scripts/check-linkage.sh` builds `linkage/`, a consumer package that
-exercises all of the above, and fails if any of the Lean package
-reached the executable.
+`scripts/check-linkage.sh` builds `linkage/`, a consumer package that exercises all of the above, and fails if any of the Lean package reached the executable.
 
 ## Development
 
-To build the library, use the standard Lake build command from the
-repository root. This will compile the `libpq` FFI bindings and the
-Lean bindings, producing the library and any default targets.
+To build the library, use the standard Lake build command from the repository root. This will compile the `libpq` FFI bindings and the Lean bindings, producing the library and any default targets.
 
 ```bash
 lake build
 ```
 
-Point the standard `PG*` environment variables (`PGHOST`, `PGPORT`,
-`PGUSER`, `PGPASSWORD`, `PGDATABASE`) at a reachable server (the
-`.devcontainer` setup and CI workflow both include this), then:
+Point the standard `PG*` environment variables (`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) at a reachable server (the `.devcontainer` setup and CI workflow both include this), then:
 
 ```bash
 lake test
 ```
 
-Every test runs inside a transaction that's rolled back afterward
-regardless of outcome, so the suite doesn't depend on, or leave
-behind, any pre-existing schema or data; it's safe to run repeatedly
-against the same database. (A handful of tests that exercise
-transaction control itself are the one exception, and clean up their
-own tables explicitly instead.)
+Every test runs inside a transaction that's rolled back afterward regardless of outcome, so the suite doesn't depend on, or leave behind, any pre-existing schema or data; it's safe to run repeatedly against the same database. (A handful of tests that exercise transaction control itself are the one exception, and clean up their own tables explicitly instead.)
 
-For verbose output that shows all passing tests in addition to
-failures, pass the verbose flag:
+For verbose output that shows all passing tests in addition to failures, pass the verbose flag:
 
 ```bash
 lake test -- --verbose
@@ -149,5 +80,4 @@ lake test -- --verbose
 
 ## License
 
-This library is released under the Apache 2.0 license. See the LICENSE
-file for the complete license text.
+This library is released under the Apache 2.0 license. See the LICENSE file for the complete license text.

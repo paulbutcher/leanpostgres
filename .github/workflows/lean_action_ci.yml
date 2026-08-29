@@ -35,7 +35,7 @@ jobs:
       PGDATABASE: leanpostgres
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install libpq
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpq-dev pkg-config
       - uses: leanprover/lean-action@v1

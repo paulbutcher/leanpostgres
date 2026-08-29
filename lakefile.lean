@@ -6,13 +6,13 @@ import Lake
 open Lake DSL System
 
 package leanpostgres where
-  version := v!"0.7.1"
+  version := v!"0.7.2"
   license := "Apache-2.0"
   leanOptions := #[⟨`experimental.module, true⟩]
   builtinLint := true
 
 require json from git
-  "https://github.com/paulbutcher/lean-json" @ "v0.1.0"
+  "https://github.com/paulbutcher/lean-json" @ "v0.2.0"
 
 /-- Runs `pkg-config --variable=<name> libpq`. `none` if pkg-config doesn't know libpq. -/
 unsafe def pkgConfigVarImpl (name : String) : Option String :=

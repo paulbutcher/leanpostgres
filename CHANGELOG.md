@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.2] - 2026-08-29
+
+Update to lean-json 0.2.0 and Lean 4.33.1.
+
 ## [0.7.1] - 2026-08-24
 
 Binding a parameter no longer relies on a partial function.
