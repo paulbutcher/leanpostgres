@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.7.3] - 2026-09-08
+
+Update to lean-json 0.3.0.
+
 ## [0.7.2] - 2026-08-29
 
 Update to lean-json 0.2.0 and Lean 4.33.1.
