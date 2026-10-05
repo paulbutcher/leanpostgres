@@ -148,7 +148,16 @@ def testUniqueViolationSqlstate (conn : Conn) : TestM Unit :=
       | some pgErr =>
         if pgErr.sqlstate != "23505" then
           throw <| IO.userError s!"expected SQLSTATE 23505, got: {pgErr}"
+        if pgErr.constraint != some "leanpostgres_test_unique_pkey" then
+          throw <| IO.userError s!"expected the violated constraint to be named, got: {repr pgErr.constraint}"
         recordSuccess s!"unique violation correctly surfaced SQLSTATE 23505: {pgErr}"
+
+#guard
+  let e : Error := { sqlstate := "23505", message := "duplicate key", constraint := some "a]b; c%d" }
+  Error.ofIOError? (.userError (toString e)) == some e
+
+#guard Error.ofIOError? (.userError "[22012] division by zero") ==
+  some { sqlstate := "22012", message := "division by zero" }
 
 /--
 Every index from 1 to `paramCount` round-trips, including the last one.

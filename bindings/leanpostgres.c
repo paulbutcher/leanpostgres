@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static lean_external_class *g_pg_conn_class = NULL;
 static lean_external_class *g_pg_result_class = NULL;
@@ -39,12 +40,42 @@ LEAN_EXPORT lean_object *leanpostgres_initialize() {
 // Builds an `IO.Error.userError` whose message is `Postgres.Error.toString`'s format
 // (`"[sqlstate] message"`), so `Postgres.Error.ofIOError?` can recover it on the Lean side.
 // `sqlstate` is empty for connection-level failures, which precede any result to read one from.
-static lean_object *leanpostgres_mk_error(const char *sqlstate, const char *message) {
+// Writes `name` into `out` (which must hold 3 * strlen(name) + 1 bytes) with the bytes that would
+// end or split the bracketed prefix `Error.ofIOError?` reads, `%`, `;`, `]` and anything up to space,
+// percent-encoded. Postgres allows any of them in a quoted identifier.
+static void leanpostgres_encode_field(const char *name, char *out) {
+    static const char hex[] = "0123456789ABCDEF";
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p == '%' || *p == ';' || *p == ']' || *p <= ' ') {
+            *out++ = '%';
+            *out++ = hex[*p >> 4];
+            *out++ = hex[*p & 15];
+        } else {
+            *out++ = (char)*p;
+        }
+    }
+    *out = '\0';
+}
+
+// `[sqlstate] message`, or `[sqlstate;constraint=name] message` when the server names the
+// constraint a statement violated. `Error.ofIOError?` reads both back.
+static lean_object *leanpostgres_mk_error(const char *sqlstate, const char *constraint, const char *message) {
     if (sqlstate == NULL) sqlstate = "";
     if (message == NULL) message = "";
-    int needed = snprintf(NULL, 0, "[%s] %s", sqlstate, message);
+    char *fields = NULL;
+    if (constraint != NULL && constraint[0] != '\0') {
+        char *encoded = malloc(strlen(constraint) * 3 + 1);
+        leanpostgres_encode_field(constraint, encoded);
+        size_t len = strlen(encoded) + sizeof(";constraint=");
+        fields = malloc(len);
+        snprintf(fields, len, ";constraint=%s", encoded);
+        free(encoded);
+    }
+    const char *extra = fields == NULL ? "" : fields;
+    int needed = snprintf(NULL, 0, "[%s%s] %s", sqlstate, extra, message);
     char *buf = malloc((size_t)needed + 1);
-    snprintf(buf, (size_t)needed + 1, "[%s] %s", sqlstate, message);
+    snprintf(buf, (size_t)needed + 1, "[%s%s] %s", sqlstate, extra, message);
+    free(fields);
     lean_object *msg_obj = lean_mk_string(buf);
     free(buf);
     return lean_io_result_mk_error(lean_mk_io_user_error(msg_obj));
@@ -55,7 +86,7 @@ LEAN_EXPORT lean_object *leanpostgres_open(lean_object *conninfo) {
     PGconn *conn = PQconnectdb(conninfo_str);
     lean_dec(conninfo);
     if (PQstatus(conn) != CONNECTION_OK) {
-        lean_object *err = leanpostgres_mk_error("", PQerrorMessage(conn));
+        lean_object *err = leanpostgres_mk_error("", NULL, PQerrorMessage(conn));
         PQfinish(conn);
         return err;
     }
@@ -139,7 +170,8 @@ LEAN_EXPORT lean_object *leanpostgres_exec_params(b_lean_obj_arg conn_obj, lean_
     ExecStatusType status = PQresultStatus(result);
     if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
         char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
-        lean_object *err = leanpostgres_mk_error(sqlstate, PQresultErrorMessage(result));
+        char *constraint = PQresultErrorField(result, PG_DIAG_CONSTRAINT_NAME);
+        lean_object *err = leanpostgres_mk_error(sqlstate, constraint, PQresultErrorMessage(result));
         PQclear(result);
         return err;
     }
@@ -159,7 +191,8 @@ LEAN_EXPORT lean_object *leanpostgres_exec_script(b_lean_obj_arg conn_obj, lean_
     ExecStatusType status = PQresultStatus(result);
     if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
         char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
-        lean_object *err = leanpostgres_mk_error(sqlstate, PQresultErrorMessage(result));
+        char *constraint = PQresultErrorField(result, PG_DIAG_CONSTRAINT_NAME);
+        lean_object *err = leanpostgres_mk_error(sqlstate, constraint, PQresultErrorMessage(result));
         PQclear(result);
         return err;
     }
