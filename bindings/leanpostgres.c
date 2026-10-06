@@ -37,12 +37,11 @@ LEAN_EXPORT lean_object *leanpostgres_initialize() {
     return lean_io_result_mk_ok(lean_box(0));
 }
 
-// Builds an `IO.Error.userError` whose message is `Postgres.Error.toString`'s format
-// (`"[sqlstate] message"`), so `Postgres.Error.ofIOError?` can recover it on the Lean side.
-// `sqlstate` is empty for connection-level failures, which precede any result to read one from.
 // Writes `name` into `out` (which must hold 3 * strlen(name) + 1 bytes) with the bytes that would
 // end or split the bracketed prefix `Error.ofIOError?` reads, `%`, `;`, `]` and anything up to space,
-// percent-encoded. Postgres allows any of them in a quoted identifier.
+// percent-encoded. Postgres allows any of them in a quoted identifier. They are all ASCII, so the
+// bytes of any other character are copied as they are, and `Error.encodeField`, which works on
+// characters, agrees.
 static void leanpostgres_encode_field(const char *name, char *out) {
     static const char hex[] = "0123456789ABCDEF";
     for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
@@ -57,8 +56,10 @@ static void leanpostgres_encode_field(const char *name, char *out) {
     *out = '\0';
 }
 
-// `[sqlstate] message`, or `[sqlstate;constraint=name] message` when the server names the
-// constraint a statement violated. `Error.ofIOError?` reads both back.
+// Builds an `IO.Error.userError` whose message is `Postgres.Error.toString`'s format
+// (`"[sqlstate] message"`, or `"[sqlstate;constraint=name] message"` when the server names the
+// constraint a statement violated), so `Postgres.Error.ofIOError?` can recover it on the Lean side.
+// `sqlstate` is empty for connection-level failures, which precede any result to read one from.
 static lean_object *leanpostgres_mk_error(const char *sqlstate, const char *constraint, const char *message) {
     if (sqlstate == NULL) sqlstate = "";
     if (message == NULL) message = "";
