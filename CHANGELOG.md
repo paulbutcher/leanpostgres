@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.8.0] - 2026-10-08
+
+Report the violated constraint on `Error`.
+
 ## [0.7.3] - 2026-09-08
 
 Update to lean-json 0.3.0.
