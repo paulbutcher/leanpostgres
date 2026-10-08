@@ -148,6 +148,8 @@ def testUniqueViolationSqlstate (conn : Conn) : TestM Unit :=
       | some pgErr =>
         if pgErr.sqlstate != "23505" then
           throw <| IO.userError s!"expected SQLSTATE 23505, got: {pgErr}"
+        if pgErr.constraint != some "leanpostgres_test_unique_pkey" then
+          throw <| IO.userError s!"expected the violated constraint to be named, got: {repr pgErr.constraint}"
         recordSuccess s!"unique violation correctly surfaced SQLSTATE 23505: {pgErr}"
 
 /--
