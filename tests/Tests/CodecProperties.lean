@@ -71,3 +71,19 @@ def testCodecProperties : TestM Unit :=
     checkProperty (List (Option String))
       (fun elems => parseArrayLiteral? (arrayLiteralOf elems) == some elems)
       "array literal" { maxSize := 300 }
+
+    -- An `Error` thrown as an `IO.Error` is recovered intact by `ofIOError?`, whatever its message
+    -- and constraint name contain. Plausible's default characters omit `%` and `]` and are almost
+    -- always ASCII, so both are drawn mostly from the characters the prefix encoding must handle.
+    -- The SQLSTATE is kept alphanumeric, as real ones are, since a `;` or `]` in it would be
+    -- misparsed by design. A theorem would have to live beside `Error`'s private helpers, and
+    -- would still have to reason about `splitOn`, for which core has no lemmas.
+    letI : Arbitrary Char := Char.arbitraryFromList 3 "%;]= [a\n\té€".toList (by decide)
+    checkProperty (String × List Char × Option (List Char))
+      (fun (sqlstate, message, constraint) =>
+        let e : Error :=
+          { sqlstate := sqlstate.toList.filter Char.isAlphanum |> String.ofList
+            message := String.ofList message
+            constraint := String.ofList <$> constraint }
+        Error.ofIOError? (.userError (toString e)) == some e)
+      "error prefix"
