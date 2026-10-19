@@ -12,7 +12,7 @@ package leanpostgres where
   builtinLint := true
 
 require json from git
-  "https://github.com/paulbutcher/lean-json" @ "v0.3.0"
+  "https://github.com/paulbutcher/lean-json" @ "v0.3.1"
 
 /-- Runs `pkg-config --variable=<name> libpq`. `none` if pkg-config doesn't know libpq. -/
 unsafe def pkgConfigVarImpl (name : String) : Option String :=
