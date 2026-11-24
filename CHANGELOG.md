@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.9.0] - 2026-11-24
+
+Breaking: requires Lean 4.36.0; update to lean-json 0.4.0.
+
 ## [0.8.1] - 2026-10-19
 
 Chore: bump dependencies.
